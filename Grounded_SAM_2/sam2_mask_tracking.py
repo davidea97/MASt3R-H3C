@@ -35,21 +35,15 @@ class MaskGenerator:
             device=self.device
         )
 
-        self.text = self.config['text_object_prompt']
 
-        if self.config['floor'] == True:
-            self.floor_text = 'floor.'
-            self.text = f"{self.text}.{self.floor_text}"
-        else:
-            self.floor_text = ''
-            
+        self.floor_text = 'floor.'
+        self.text = f"{self.floor_text}."
 
         self.image_list = image_list
         self.subfolders = subfolders
         self.output_folder_mask = 'masks/'
         self.output_folder_mask_colored = 'masks_colored/'
         self.output_folder_annotation = 'annotations/'
-        # self.output_folder_boxes = 'boxes/'
 
         print("> MaskGenerator initialized")
 
@@ -140,10 +134,6 @@ class MaskGenerator:
                 mask_img_np = mask_img.cpu().numpy().astype(np.uint8)
 
                 Image.fromarray(mask_img_np).save(os.path.join(subfolder, os.path.join(self.output_folder_mask, f'{(frame_idx):04d}.png')), format='PNG')
-            
-            # TODO: Uncomment if you want to create a video from the images
-            # output_video_path = "./children_tracking_demo_video.mp4"
-            # create_video_from_images(save_dir, output_video_path)
 
         return init_objects
                 
@@ -160,7 +150,3 @@ class MaskGenerator:
         if os.path.exists(os.path.join(subfolder, self.output_folder_annotation)):
             shutil.rmtree(os.path.join(subfolder, self.output_folder_annotation))
         os.makedirs(os.path.join(subfolder, self.output_folder_annotation), exist_ok=True)
-    
-        # if os.path.exists(os.path.join(subfolder, self.output_folder_boxes)):
-        #     shutil.rmtree(os.path.join(subfolder, self.output_folder_boxes))
-        # os.makedirs(os.path.join(subfolder, self.output_folder_boxes), exist_ok=True)

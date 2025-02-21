@@ -93,7 +93,7 @@ class SparseGA():
     def get_sparse_pts3d(self):
         return self.pts3d
 
-    def get_dense_pts3d(self, number_of_objects=None, masks=None, clean_depth=True, subsample=8):
+    def get_dense_pts3d(self, masks=None, clean_depth=True, subsample=8):
         assert self.canonical_paths, 'cache_path is required for dense 3d points'
         device = self.cam2w.device
         confs = []
@@ -102,35 +102,29 @@ class SparseGA():
         anchors = {}
         all_masks_bool = []
         H, W = masks[0].shape
-        all_conf_object = [[None for _ in range(len(self.canonical_paths))] for _ in range(number_of_objects)]
+        all_conf_object = None
+        if masks is not None:
+            all_conf_object = [[None for _ in range(len(self.canonical_paths))] for _ in range(1)]
+        
         for i, canon_path in enumerate(self.canonical_paths):
             (canon, canon2, conf), focal = torch.load(canon_path, map_location=device)
             confs.append(conf)
             H, W = conf.shape
             # Append object confidence (TODO: check if the masks is null)
-            if masks[i] is None:
-                masks[i] = np.zeros((H, W), dtype=int)
-            
-            unique_masks = np.unique(masks[i])
-            confs_object = []
-            masks_bool = []
-            for mask_value in unique_masks:
-                if mask_value == 0:
-                    continue
-                mask_tensor = torch.from_numpy(masks[i]).to(conf.device)  # Convert mask to PyTorch tensor
-                mask_object = (mask_tensor == mask_value)
-                mask_bool = mask_object.bool()
-                # masks_bool.append(mask_bool)
-                conf_object = conf[mask_bool]
-                # # confs_object.append(conf_object)
-                # print(f"Confidence object {mask_value-1}: {conf_object}")
-                # print(f"Confidence object {mask_value-1} shape: {len(all_conf_object[mask_value-1])}")
-                all_conf_object[mask_value-1][i] = conf_object
-                # print(f"All confs objects {mask_value-1}: {len(all_conf_object[mask_value-1])}")
+            if masks is not None:
+                if masks[i] is None:
+                    masks[i] = np.zeros((H, W), dtype=int)
+                
+                unique_masks = np.unique(masks[i])
+                for mask_value in unique_masks:
+                    if mask_value == 0:
+                        continue
+                    mask_tensor = torch.from_numpy(masks[i]).to(conf.device)  # Convert mask to PyTorch tensor
+                    mask_object = (mask_tensor == mask_value)
+                    mask_bool = mask_object.bool()
+                    conf_object = conf[mask_bool]
+                    all_conf_object[mask_value-1][i] = conf_object
             base_focals.append(focal)
-
-            # all_conf_object.append(confs_object)
-            # all_masks_bool.append(masks_bool)
 
             pixels = torch.from_numpy(np.mgrid[:W, :H].T.reshape(-1, 2)).float().to(device)
             idxs, offsets = anchor_depth_offsets(canon2, {i: (pixels, None)}, subsample=subsample)
@@ -158,13 +152,7 @@ class SparseGA():
                 clean_depth = False
                 if clean_depth:
                     confs = clean_pointcloud(confs, self.intrinsics, inv(torch.stack(self.get_relative_poses(), dim=0)), depthmaps, pts3d)
-                    # TODO: Add the clean_object_pointcloud function
-                    # confs_object = clean_object_pointcloud(confs_object, confs, masks_bool, self.intrinsics, inv(torch.stack(self.get_relative_poses(), dim=0)), depthmaps_obj, pts3d_object)
 
-        print("3D object length: ", len(pts3d_object))
-        print("Confs object length: ", len(all_conf_object))
-        # print("Confs object shape: ", all_conf_object[0][0].shape)
-        # print("Confs object: ", all_conf_object)
         return pts3d, pts3d_object, depthmaps, confs, all_conf_object
 
     def get_dense_original_pts3d(self, clean_depth=True, subsample=8):
@@ -231,13 +219,10 @@ def sparse_global_alignment(imgs, pairs_in, cache_path, model, masks = None, int
     pairs_in = convert_dust3r_pairs_naming(imgs, pairs_in)
     
     # forward pass
-    print("DESC_CONF: ", desc_conf)
-    print("MODEL: ", model)
     pairs, cache_path = forward_mast3r(pairs_in, model,
                                        cache_path=cache_path, subsample=subsample,
                                        desc_conf=desc_conf, device=device)
     
-    print("Pairs: ", pairs.keys())
 
     # extract canonical pointmaps
     if intrinsic_params is None:
@@ -1502,28 +1487,13 @@ def make_pts3d_mask(anchors, K, cam2w, depthmaps, masks=None, base_focals=None, 
                     continue
                 # Get the points corresponding to the current object (mask_value)
                 object_mask = (mask_flat == mask_value)
-                print("Object mask: ", object_mask)
-                print("Shape of object mask: ", object_mask.shape)
                 num_ones = np.count_nonzero(object_mask)
-                print(f"Number of ones (True values) in object mask: {num_ones}")
                 # Separate points based on the mask value
                 pts3d_object.append(pts3d[object_mask])  # Points where mask == mask_value (object)
-                print("Length of pts3d_object: ", len(pts3d[object_mask]))
                 if ret_depth:
                     depth_out_object.append(pts3d[..., 2][object_mask])  # Depth for the current object
 
             all_pts3d_object.append(pts3d_object)
-
-        # if mask is not None:
-        #     # Separate points using the mask
-        #     all_pts3d_object.append(pts3d[mask_flat])  # Points where mask == 1 (object)
-        #     print("Object mask: ", mask_flat)
-        #     print("Shape of object mask: ", mask_flat.shape)
-        #     num_ones = np.count_nonzero(mask_flat)
-        #     print(f"Number of ones (True values) in object mask: {num_ones}")
-        #     if ret_depth:
-        #         depth_out_object.append(pts3d[..., 2][mask_flat])
-
 
     if ret_depth:
         return all_pts3d, all_pts3d_object, depth_out, depth_out_object
@@ -1646,7 +1616,6 @@ def extract_correspondences(feats, qonfs, subsample=8, device=None, ptmap_key='p
         idx2.append(np.r_[nn1to2[1], nn2to1[0]])
         qonf1.append(QA.ravel()[idx1[-1]])
         qonf2.append(QB.ravel()[idx2[-1]])
-    print("GRAD QONF1: ", qonf1[0].requires_grad)
     # merge corres from opposite pairs
     H1, W1 = feat11.shape[:2]
     H2, W2 = feat22.shape[:2]

@@ -20,9 +20,8 @@ from mast3r.utils.general_utils import generate_image_list, generate_mask_list, 
 import mast3r.utils.path_to_dust3r  # noqa
 from dust3r.demo import set_print_with_timestamp
 from utils.file_utils import *
-# from Grounded_SAM_2.sam2_maskgenerator import MaskGenerator 
+
 from Grounded_SAM_2.sam2_mask_tracking import MaskGenerator 
-# from samurai_maskgenerator import MaskGenerator 
 import glob
 import matplotlib.pyplot as pl
 pl.ion()
@@ -36,10 +35,10 @@ if __name__ == '__main__':
     parser.add_argument('--input_folder', type=str, default="dust3r/croco/assets")
     parser.add_argument('--outdir', type=str, default="output")
     parser.add_argument('--config', type=str, default="config.yaml", help="Path to the configuration file")
-    parser.add_argument('--mask', type=str2bool, default=False, help="True or False for mask generation")
+    parser.add_argument('--mask_floor', type=str2bool, default=True, help="True or False for floor mask generation")
     parser.add_argument('--subset_size', type=int, default=0, help="Number of images to use for the reconstruction")
-    parser.add_argument('--use_intrinsics', type=str2bool, default=False, help="Use intrinsic parameters for the cameras")
-    parser.add_argument('--use_robot_motion', type=str2bool, default=False, help="Use robot motion to improve camera poses and perform the calibration step")
+    parser.add_argument('--use_intrinsics', type=str2bool, default=True, help="Use intrinsic parameters for the cameras")
+    parser.add_argument('--calibrate_sensor', type=str2bool, default=True, help="Use robot motion to perform the calibration step")
 
     args = parser.parse_args()
     set_print_with_timestamp()
@@ -53,7 +52,7 @@ if __name__ == '__main__':
         weights_path = args.weights
     else:
         weights_path = "naver/" + args.model_name
-    print("Weights path: ", weights_path)
+
     model = AsymmetricMASt3R.from_pretrained(weights_path).to(args.device)
     chkpt_tag = hash_md5(weights_path)
     config = load_config(args.config)
@@ -61,8 +60,8 @@ if __name__ == '__main__':
     image_list, subfolders = generate_image_list(args.input_folder)
     robot_poses = [[] for _ in range(len(subfolders))]
     image_sublist = [[] for _ in range(len(subfolders))]
-    if args.use_robot_motion:
-        print("Using robot motion to improve camera poses and perform the calibration step")
+    if args.calibrate_sensor:
+        print("Use robot motion to perform the calibration step")
         for i, subfolder in enumerate(subfolders):
             yaml_files = sorted(glob.glob(f"{subfolder}/relative_rob_poses/*.yaml"))
             for yaml_file in yaml_files:
@@ -90,14 +89,12 @@ if __name__ == '__main__':
     else:
         image_sublist = image_list
 
-    if args.mask:
+    if args.mask_floor:
         mask_generator = MaskGenerator(config, image_sublist, subfolders)
         print("Generating masks...")
         objects = mask_generator.generate_masks()
     mask_list = generate_mask_list(args.input_folder, image_sublist)
-    # print("Image list: ", image_list)
-    # print("Image sublist: ", image_sublist)
-    # print("Mask list: ", mask_list)
+
     intrinsic_params_vec = []
     dist_coeffs = []
     if args.use_intrinsics:
@@ -116,7 +113,5 @@ if __name__ == '__main__':
     with get_context(args.tmp_dir) as tmpdirname:
         cache_path = os.path.join(tmpdirname, chkpt_tag)
         os.makedirs(cache_path, exist_ok=True)
-        number_of_objects = len(objects) if args.mask else None
-        main_demo(cache_path, model, config, args.device, args.image_size, server_name, args.server_port, 
-                    args.input_folder, image_sublist, mask_list, number_of_objects, intrinsic_params_vec, dist_coeffs, robot_poses,
-                    silent=args.silent,share=args.share, gradio_delete_cache=args.gradio_delete_cache)
+        main_demo(cache_path, model, config, args.device, server_name, args.server_port, image_sublist, mask_list, args.silent,
+                  intrinsic_params_vec, dist_coeffs, robot_poses, share=args.share, gradio_delete_cache=args.gradio_delete_cache)

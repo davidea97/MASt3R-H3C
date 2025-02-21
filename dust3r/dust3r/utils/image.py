@@ -201,7 +201,7 @@ def load_images_intr(folder_or_list, size, intrinsics, square_ok=False, verbose=
     return images, original_image_size
 
 
-def load_single_images_intr(folder, size, intrinsics, square_ok=False, verbose=True):
+def load_single_images(folder, size, square_ok=False, verbose=True):
     """ open and convert all images in a list or folder to proper input format for DUSt3R
     """
     images = []
@@ -363,7 +363,7 @@ def load_masks(folder_or_list, image_list, intrinsics, size, square_ok=False, ve
 
 
 
-def load_single_masks(folder, image_list, intrinsics, size, square_ok=False, verbose=True):
+def load_single_masks(folder, image_list, size, square_ok=False, verbose=True):
     """
     Open and process mask images while aligning them with an images list.
     If a mask for an image is missing, appends None to ensure alignment.

@@ -1,12 +1,12 @@
-# MASTER configuration file
+# MASt3R-H3C configuration file
 gradio_delete_cache: false
 silent: false
 image_size: 512
 current_scene_state: null
-lr1: 0.07
-lr2: 0.014
-niter1: 500
-niter2: 100
+# lr1: 0.07
+# lr2: 0.014
+# niter1: 500
+# niter2: 100
 min_conf_thr: 1.0
 matching_conf_thr: 5
 as_pointcloud: true
@@ -25,11 +25,9 @@ principal_point_y: 0
 
 
 # SAM2 configuration file
-sam2_checkpoint: Grounded_SAM_2/checkpoints/sam2.1_hiera_large.pt
+sam2_checkpoint: checkpoints/sam_checkpoints/sam2.1_hiera_large.pt
 model_cfg: configs/sam2.1/sam2.1_hiera_l.yaml
 grounding_dino_config: Grounded_SAM_2/grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py
-dino_checkpoint: Grounded_SAM_2/gdino_checkpoints/groundingdino_swint_ogc.pth
+dino_checkpoint: checkpoints/gdino_checkpoints/groundingdino_swint_ogc.pth
 box_threshold: 0.4
 text_threshold: 0.35
-floor: False
-text_object_prompt: remote control .

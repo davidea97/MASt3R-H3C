@@ -32,14 +32,8 @@ class MaskGenerator:
             device=self.device
         )
 
-        self.text = self.config['text_object_prompt']
-
-        if self.config['floor'] == True:
-            self.floor_text = 'floor'
-            self.text = f"{self.text}.{self.floor_text}"
-        else:
-            self.floor_text = ''
-            
+        self.floor_text = 'floor'
+        self.text = f"{self.text}."
 
         self.image_list = image_list
         self.subfolders = subfolders
@@ -72,7 +66,6 @@ class MaskGenerator:
             os.makedirs(os.path.join(subfolder, self.output_folder_boxes), exist_ok=True)
 
             for idx, img_path in enumerate(tqdm(self.image_list[i])):
-                #img_path = self.image_list[i][img]
                 image_source, image = load_image(img_path)
                 self.sam2_predictor.set_image(image_source)
                 boxes, confidences, labels = predict(
