@@ -113,37 +113,12 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
 
                 # Generate a random color (RGB values between 0 and 1)
                 random_color = np.random.rand(3)  # Random color for the object
-                reference_frame_object = None
                 if mask_floor:
                     
                     # Prepare Open3D point cloud and apply RANSAC for plane fitting
                     pcd = o3d.geometry.PointCloud()
                     pcd.points = o3d.utility.Vector3dVector(valid_pts_obj)
 
-
-                    # centroid = np.mean(np.asarray(pcd.points), axis=0)
-
-                    # reference_frame_object = trimesh.creation.axis(origin_size=0.05, axis_length=0.4)
-                    # reference_frame_object.apply_translation(centroid)
-                    # # Rotation matrix for 180 degrees around the Y-axis
-                    # rotation_matrix_x = trimesh.transformations.rotation_matrix(
-                    #     angle=np.pi/2+0.3,  # 180 degrees in radians
-                    #     direction=[1, 0, 0],  # Y-axis
-                    #     point=centroid
-                    # )
-
-                    # # Apply the rotation to the reference frame
-                    # reference_frame_object.apply_transform(rotation_matrix_x)
-
-                    # rotation_matrix_z = trimesh.transformations.rotation_matrix(
-                    #     angle=np.pi/4,  # 180 degrees in radians
-                    #     direction=[0, 0, 1],  # Y-axis
-                    #     point=centroid
-                    # )
-                    # Visualize the segmented plane with the reference frame
-                    # o3d.visualization.draw_geometries([pcd, plane_cloud, reference_frame])
-
-                    # reference_frame_object.apply_transform(rotation_matrix_z)
                     # Apply RANSAC for ground plane segmentation
                     plane_model, inliers = pcd.segment_plane(distance_threshold=0.01, ransac_n=5, num_iterations=1000)
                     a, b, c, d = plane_model
@@ -154,21 +129,13 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
 
                 pct_updated = trimesh.PointCloud(valid_pts, colors=valid_col)
                 scene.add_geometry(pct_updated)
-                # scene.add_geometry(reference_frame_object)
-        
-            # Update point cloud with new colors
-            # pct_updated = trimesh.PointCloud(valid_pts, colors=valid_col)
-            # scene.add_geometry(pct_updated)
             
             camera_poses = cams2world  
             camera_frames = []
             heights = []
-            reference_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
-            pose_camera_0 = np.eye(4)
-            
+
             for i, pose in enumerate(camera_poses):
                 if i == 0:
-                    pose_camera_0 = pose
                     camera_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=[0, 0, 0])
                 else:
                     camera_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
@@ -207,10 +174,6 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
                 height = abs(a * x + b * y + c * z + d) / np.sqrt(a**2 + b**2 + c**2)
                 heights.append(height)
                 print(f"Height of the camera {i} w.r.t. the ground: {height}")
-        
-        # colors = col[valid_msk]
-        # pct = trimesh.PointCloud(pts, colors=colors)
-        # scene.add_geometry(pct)
 
     else:
         meshes = []
@@ -389,7 +352,9 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
     scene_state = SparseGAState(scene, gradio_delete_cache, cache_dir, outfile_name)
     outfile = get_3D_model_from_scene(silent, scene_state, config['cam_size'], config['min_conf_thr'], as_pointcloud, mask_sky, mask_floor, mask_objects, 
                                       clean_depth, transparent_cams, config['TSDF_thresh'])
-    return scene_state, outfile
+    
+    images = [cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in filelist]
+    return scene_state, outfile, images
 
 
 def set_scenegraph_options(inputfiles, win_cyclic, scenegraph_type):
@@ -547,6 +512,7 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                 transparent_cams = gradio.Checkbox(value=False, label="Transparent cameras")
 
             outmodel = gradio.Model3D()
+            outgallery = gradio.Gallery(label='rgb', columns=4, height="100%")
 
             # events
             scenegraph_type.change(set_scenegraph_options,
@@ -593,7 +559,7 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                 inputs=[scene, inputfiles, intrinsic_state, dist_coeff_state, masks_state, robot_pose_state, optim_level, lr1, niter1, as_pointcloud, mask_sky, mask_floor, mask_objects,
                         clean_depth, transparent_cams, scenegraph_type, winsize,
                         win_cyclic],
-                outputs=[scene, outmodel]
+                outputs=[scene, outmodel, outgallery]
             )
 
     demo.launch(share=share, server_name=server_name, server_port=server_port)
