@@ -236,13 +236,10 @@ def sparse_global_alignment(imgs, pairs_in, cache_path, model, masks = None, int
     # compute minimal spanning tree
     mst = compute_min_spanning_tree(pairwise_scores)
 
-    # remove all edges not in the spanning tree?
-    # min_spanning_tree = {(imgs[i],imgs[j]) for i,j in mst[1]}
-    # tmp_pairs = {(a,b):v for (a,b),v in tmp_pairs.items() if {(a,b),(b,a)} & min_spanning_tree}
-
     # smartly combine all useful data
     imsizes, pps, base_focals, core_depth, anchors, corres, corres2d, preds_21 = \
         condense_data(imgs, tmp_pairs, canonical_views, preds_21, dtype)
+    
     base_focals = base_focals.to(device)
     scale_factor, quat_X, trans_X = None, None, None
     if intrinsic_params is None:
