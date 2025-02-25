@@ -315,7 +315,7 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
     flattened_imgs, _ = load_single_images(flattened_filelist, config['image_size'], verbose=not config['silent'])
     
     if mask_list is not None and len(mask_list) > 0:
-        if opt_process == "Process All":
+        if opt_process == PROCESS_ALL_IMAGES:
             flattened_masklist = [item for sublist in mask_list for item in sublist]
         else:
             flattened_masklist = mask_list
@@ -341,7 +341,7 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
         cache_dir = os.path.join(outdir, 'cache')
     os.makedirs(cache_dir, exist_ok=True)
     scene = sparse_global_alignment(flattened_filelist, pairs, cache_dir,
-                                    model, flattened_msks, intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs, 
+                                    model, opt_process, flattened_msks, intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs, 
                                     robot_poses=robot_poses, lr1=lr1, niter1=niter1, device=device,
                                     opt_depth=optim_level, shared_intrinsics=config['shared_intrinsics'],
                                     matching_conf_thr=config['matching_conf_thr'], **kw)
@@ -466,18 +466,12 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                     interactive=False
                 )
 
-                # Placeholder for dynamically updated file input
-                inputfiles = gradio.File(
-                    file_count="multiple",
-                    label="Files to Process"
-                )
-
                 intrinsic_state = gradio.State(None)
                 dist_coeff_state = gradio.State(None)
                 robot_pose_state = gradio.State(None)
                 masks_state = gradio.State(None)
                 opt_process_state = gradio.State(None)
-
+                inputfiles = gradio.State(None)
 
                 # Update handlers for list selection
                 list_selector.change(
@@ -486,6 +480,11 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                     outputs=[selected_image_paths, inputfiles, intrinsic_state, dist_coeff_state, robot_pose_state, masks_state, opt_process_state]
                 )
             else:
+                # Placeholder for dynamically updated file input
+                inputfiles = gradio.File(
+                    file_count="multiple",
+                    label="Files to Process"
+                )
                 # Fall back to file upload if no image_list is provided
                 gradio.HTML('<h3>Upload Images:</h3>')
                 inputfiles = gradio.File(file_count="multiple", label="Upload Images")

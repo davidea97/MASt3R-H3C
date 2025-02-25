@@ -28,6 +28,7 @@ from dust3r.post_process import estimate_focal_knowing_depth  # noqa
 from dust3r.optim_factory import adjust_learning_rate_by_lr  # noqa
 from dust3r.cloud_opt.base_opt import clean_pointcloud, clean_object_pointcloud
 from dust3r.viz import SceneViz
+from mast3r.utils.general_utils import reshape_list
 
 from utils.file_utils import *
 
@@ -203,7 +204,7 @@ def convert_dust3r_pairs_naming(imgs, pairs_in):
     return pairs_in
 
 
-def sparse_global_alignment(imgs, pairs_in, cache_path, model, masks = None, intrinsic_params=None, dist_coeffs_cam=None, robot_poses=None, subsample=8, desc_conf='desc_conf',
+def sparse_global_alignment(imgs, pairs_in, cache_path, model, opt_process=None, masks = None, intrinsic_params=None, dist_coeffs_cam=None, robot_poses=None, subsample=8, desc_conf='desc_conf',
                             device='cuda', dtype=torch.float32, shared_intrinsics=False, **kw):
     """ Sparse alignment with MASt3R
         imgs: list of image paths
@@ -225,12 +226,9 @@ def sparse_global_alignment(imgs, pairs_in, cache_path, model, masks = None, int
     
 
     # extract canonical pointmaps
+    print("Intrinsic params: ", intrinsic_params)
     tmp_pairs, pairwise_scores, canonical_views, canonical_paths, preds_21 = \
-            prepare_canonical_data(imgs, pairs, subsample, cache_path=cache_path, mode='avg-angle', device=device, intrinsic_params=intrinsic_params)
-    # else:
-    #     tmp_pairs, pairwise_scores, canonical_views, canonical_paths, preds_21 = \
-    #         prepare_canonical_data_knwon_calib(imgs, pairs, subsample, cache_path=cache_path, mode='avg-angle', device=device,
-    #                                intrinsic_params=intrinsic_params)
+            prepare_canonical_data(imgs, pairs, subsample, cache_path=cache_path, mode='avg-angle', device=device, intrinsic_params=intrinsic_params, opt_process=opt_process)
 
     # compute minimal spanning tree
     mst = compute_min_spanning_tree(pairwise_scores)
@@ -259,7 +257,8 @@ def sparse_global_alignment(imgs, pairs_in, cache_path, model, masks = None, int
 
 
 def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d,
-                           preds_21, canonical_paths, mst, cache_path,
+                           preds_21, canonical_paths, mst, cache_path, dist_coeffs_cam=None,
+                           robot_poses=None,
                            lr1=0.2, niter1=500, loss1=gamma_loss(1.1),
                            lr2=0.02, niter2=500, loss2=gamma_loss(0.4),
                            lossd=gamma_loss(1.1),
@@ -276,6 +275,12 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
     vec0001 = torch.tensor((0, 0, 0, 1), dtype=dtype, device=device)
     quats = [nn.Parameter(vec0001.clone()) for _ in range(len(imgs))]
     trans = [nn.Parameter(torch.zeros(3, device=device, dtype=dtype)) for _ in range(len(imgs))]
+
+    # Initialization of hand-eye calibration parameters
+    if robot_poses is not None:
+        quat_X = torch.tensor([1.0, 0.0, 0.0, 0.0])  # Identity quaternion
+        trans_X = torch.tensor([0.0, 0.0, 0.0])  # Zero translation
+        scale_factor = torch.tensor(1.0)
 
     # initialize
     ones = torch.ones((len(imgs), 1), device=device, dtype=dtype)
@@ -620,7 +625,6 @@ def sparse_scene_optimizer_known_calib(imgs, subsample, imsizes, pps, base_focal
 
     # intrinsics parameters
     if shared_intrinsics:
-        print('Optimizing shared intrinsics')
         # Optimize a single set of intrinsics for all cameras. Use averages as init.
         confs = torch.stack([torch.load(pth)[0][2].mean() for pth in canonical_paths]).to(pps)
         weighting = confs / confs.sum()
@@ -646,7 +650,7 @@ def sparse_scene_optimizer_known_calib(imgs, subsample, imsizes, pps, base_focal
     K_fixed[:, 0, 0] = K_fixed[:, 1, 1] = focals
     K_fixed[:, 0:2, 2] = pps * imsizes
     K_fixed = K_fixed.detach()
-
+    print("K FIXED: ", K_fixed)
     def make_K_cam_depth(K_fixed, pps, trans, quats, log_sizes, core_depth):
         
         if trans is None:
@@ -996,7 +1000,7 @@ def sparse_scene_optimizer_with_robot_motion(imgs, subsample, imsizes, pps, base
     K_fixed[:, 0, 0] = K_fixed[:, 1, 1] = focals
     K_fixed[:, 0:2, 2] = pps * imsizes
     K_fixed = K_fixed.detach()
-
+    print("K FIXED: ", K_fixed)
     def make_K_cam_depth(K_fixed, pps, trans, quats, log_sizes, core_depth):
         
         if trans is None:
@@ -1625,12 +1629,32 @@ def extract_correspondences(feats, qonfs, subsample=8, device=None, ptmap_key='p
 
 @torch.no_grad()
 def prepare_canonical_data(imgs, tmp_pairs, subsample, order_imgs=False, min_conf_thr=0,
-                           cache_path=None, device='cuda', intrinsic_params=None, **kw):
+                           cache_path=None, device='cuda', intrinsic_params=None, opt_process=None, **kw):
     canonical_views = {}
     pairwise_scores = torch.zeros((len(imgs), len(imgs)), device=device)
     canonical_paths = []
     preds_21 = {}
+    if opt_process=="Process All":
+        folder_imgs = reshape_list(imgs, len(intrinsic_params))
+    else:
+        folder_imgs = [imgs]
+        intrinsic_params = [intrinsic_params]
+
+    print("Folder images length: ", len(folder_imgs))
+    print("Folder images: ", folder_imgs)
+
     for img in tqdm(imgs):
+        found = False
+        selected_list = None
+        for i, folder_list in enumerate(folder_imgs):  
+            if img in folder_list:
+                selected_list = i
+                print("Selected list: ", selected_list)
+                found = True
+                break  # Stop searching once found
+        if not found:
+            print(f"Image {img} not found in any folder list!")
+
         if cache_path:
             cache = os.path.join(cache_path, 'canon_views', hash_md5(img) + f'_{subsample=}_{kw=}.pth')
             canonical_paths.append(cache)
@@ -1667,8 +1691,6 @@ def prepare_canonical_data(imgs, tmp_pairs, subsample, order_imgs=False, min_con
 
             if score is not None:
                 i, j = imgs.index(img1), imgs.index(img2)
-                # score = score[0]
-                # score = np.log1p(score[2])
                 score = score[2]
                 pairwise_scores[i, j] = score
                 pairwise_scores[j, i] = score
@@ -1697,8 +1719,8 @@ def prepare_canonical_data(imgs, tmp_pairs, subsample, order_imgs=False, min_con
                 if cache:
                     torch.save(to_cpu(((canon, canon2, cconf), focal)), mkdir_for(cache))
         else:
-            focal = torch.tensor([intrinsic_params['focal']], device=device)
-            pp = torch.tensor(intrinsic_params['pp'], device=device)
+            focal = torch.tensor([intrinsic_params[selected_list]['focal']], device=device)
+            pp = torch.tensor(intrinsic_params[selected_list]['pp'], device=device)
 
             if cache:
                 torch.save(to_cpu(((canon, canon2, cconf), focal)), mkdir_for(cache))
