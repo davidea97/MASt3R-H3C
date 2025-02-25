@@ -49,6 +49,7 @@ class MaskGenerator:
 
     def generate_masks(self):
 
+        _, ext_example = os.path.splitext(self.image_list[0][0])
         for i, subfolder in enumerate(self.subfolders[:1]):
             print(f"> Processing subfolder {subfolder}")
 
@@ -106,7 +107,8 @@ class MaskGenerator:
             ID_TO_OBJECTS = {i: obj for i, obj in enumerate(init_objects, start=1)}
             for frame_idx, segments in video_segments.items():
                 img = cv2.imread(self.image_list[i][frame_idx])
-                
+                _, ext = os.path.splitext(self.image_list[i][frame_idx])
+                image_name = os.path.basename(self.image_list[i][frame_idx]).split('.')[0]
                 object_ids = list(segments.keys())
                 masks = list(segments.values())
                 masks = np.concatenate(masks, axis=0)
@@ -121,10 +123,10 @@ class MaskGenerator:
                 annotated_frame = box_annotator.annotate(scene=img.copy(), detections=detections)
                 label_annotator = sv.LabelAnnotator()
                 annotated_frame = label_annotator.annotate(annotated_frame, detections=detections, labels=[ID_TO_OBJECTS[i] for i in object_ids])
-                cv2.imwrite(os.path.join(subfolder, os.path.join(self.output_folder_annotation, f'{(frame_idx):04d}.png')), annotated_frame)
+                cv2.imwrite(os.path.join(subfolder, os.path.join(self.output_folder_annotation, f'{image_name}{ext}')), annotated_frame)
                 mask_annotator = sv.MaskAnnotator()
                 annotated_frame = mask_annotator.annotate(scene=annotated_frame, detections=detections)
-                cv2.imwrite(os.path.join(subfolder, os.path.join(self.output_folder_mask_colored, f'{(frame_idx):04d}.png')), annotated_frame)
+                cv2.imwrite(os.path.join(subfolder, os.path.join(self.output_folder_mask_colored, f'{image_name}{ext}')), annotated_frame)
 
                 mask_img = torch.zeros(masks.shape[1:], dtype=torch.uint8)  # Shape (H, W)
 
@@ -133,9 +135,9 @@ class MaskGenerator:
                     mask_img[binary_mask] = label + 1  # Assign label idx+1 to current mask
                 mask_img_np = mask_img.cpu().numpy().astype(np.uint8)
 
-                Image.fromarray(mask_img_np).save(os.path.join(subfolder, os.path.join(self.output_folder_mask, f'{(frame_idx):04d}.png')), format='PNG')
+                Image.fromarray(mask_img_np).save(os.path.join(subfolder, os.path.join(self.output_folder_mask, f'{image_name}{ext}')), format='PNG')
 
-        return init_objects
+        return init_objects, ext_example
                 
 
     def create_folder(self, subfolder):

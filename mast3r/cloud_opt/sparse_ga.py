@@ -225,13 +225,12 @@ def sparse_global_alignment(imgs, pairs_in, cache_path, model, masks = None, int
     
 
     # extract canonical pointmaps
-    if intrinsic_params is None:
-        tmp_pairs, pairwise_scores, canonical_views, canonical_paths, preds_21 = \
-            prepare_canonical_data(imgs, pairs, subsample, cache_path=cache_path, mode='avg-angle', device=device)
-    else:
-        tmp_pairs, pairwise_scores, canonical_views, canonical_paths, preds_21 = \
-            prepare_canonical_data_knwon_calib(imgs, pairs, subsample, cache_path=cache_path, mode='avg-angle', device=device,
-                                   intrinsic_params=intrinsic_params)
+    tmp_pairs, pairwise_scores, canonical_views, canonical_paths, preds_21 = \
+            prepare_canonical_data(imgs, pairs, subsample, cache_path=cache_path, mode='avg-angle', device=device, intrinsic_params=intrinsic_params)
+    # else:
+    #     tmp_pairs, pairwise_scores, canonical_views, canonical_paths, preds_21 = \
+    #         prepare_canonical_data_knwon_calib(imgs, pairs, subsample, cache_path=cache_path, mode='avg-angle', device=device,
+    #                                intrinsic_params=intrinsic_params)
 
     # compute minimal spanning tree
     mst = compute_min_spanning_tree(pairwise_scores)
@@ -1691,99 +1690,107 @@ def prepare_canonical_data(imgs, tmp_pairs, subsample, order_imgs=False, min_con
 
         # compute focals
         H, W = canon.shape[:2]
-        pp = torch.tensor([W / 2, H / 2], device=device)
-        if focal is None:
-            focal = estimate_focal_knowing_depth(canon[None], pp, focal_mode='weiszfeld', min_focal=0.5, max_focal=3.5)
+        if intrinsic_params is None:
+            pp = torch.tensor([W / 2, H / 2], device=device)
+            if focal is None:
+                focal = estimate_focal_knowing_depth(canon[None], pp, focal_mode='weiszfeld', min_focal=0.5, max_focal=3.5)
+                if cache:
+                    torch.save(to_cpu(((canon, canon2, cconf), focal)), mkdir_for(cache))
+        else:
+            focal = torch.tensor([intrinsic_params['focal']], device=device)
+            pp = torch.tensor(intrinsic_params['pp'], device=device)
+
             if cache:
                 torch.save(to_cpu(((canon, canon2, cconf), focal)), mkdir_for(cache))
-
-        # extract depth offsets with correspondences
-        core_depth = canon[subsample // 2::subsample, subsample // 2::subsample, 2]
-        idxs, offsets = anchor_depth_offsets(canon2, pixels, subsample=subsample)
-
-        canonical_views[img] = (pp, (H, W), focal.view(1), core_depth, pixels, idxs, offsets)
-
-    return tmp_pairs, pairwise_scores, canonical_views, canonical_paths, preds_21
-
-@torch.no_grad()
-def prepare_canonical_data_knwon_calib(imgs, tmp_pairs, subsample, order_imgs=False, min_conf_thr=0,
-                           cache_path=None, device='cuda', intrinsic_params=None, **kw):
-    canonical_views = {}
-    pairwise_scores = torch.zeros((len(imgs), len(imgs)), device=device)
-    canonical_paths = []
-    preds_21 = {}
-    for img in tqdm(imgs):
-        if cache_path:
-            cache = os.path.join(cache_path, 'canon_views', hash_md5(img) + f'_{subsample=}_{kw=}.pth')
-            canonical_paths.append(cache)
-        try:
-            (canon, canon2, cconf), focal = torch.load(cache, map_location=device)
-        except IOError:
-            # cache does not exist yet, we create it!
-            canon = focal = None
         
-        # collect all pred1
-        n_pairs = sum((img in pair) for pair in tmp_pairs)
-
-        ptmaps11 = None
-        pixels = {}
-        n = 0
-        for (img1, img2), ((path1, path2), path_corres) in tmp_pairs.items():
-            score = None
-            if img == img1:
-                X, C, X2, C2 = torch.load(path1, map_location=device)
-                score, (xy1, xy2, confs) = load_corres(path_corres, device, min_conf_thr)
-                pixels[img2] = xy1, confs
-                if img not in preds_21:
-                    preds_21[img] = {}
-                # Subsample preds_21
-                preds_21[img][img2] = X2[::subsample, ::subsample].reshape(-1, 3), C2[::subsample, ::subsample].ravel()
-
-            if img == img2:
-                X, C, X2, C2 = torch.load(path2, map_location=device)
-                score, (xy1, xy2, confs) = load_corres(path_corres, device, min_conf_thr)
-                pixels[img1] = xy2, confs
-                if img not in preds_21:
-                    preds_21[img] = {}
-                preds_21[img][img1] = X2[::subsample, ::subsample].reshape(-1, 3), C2[::subsample, ::subsample].ravel()
-
-            if score is not None:
-                i, j = imgs.index(img1), imgs.index(img2)
-                # score = score[0]
-                # score = np.log1p(score[2])
-                score = score[2]
-                pairwise_scores[i, j] = score
-                pairwise_scores[j, i] = score
-
-                if canon is not None:
-                    continue
-                if ptmaps11 is None:
-                    H, W = C.shape
-                    ptmaps11 = torch.empty((n_pairs, H, W, 3), device=device)
-                    confs11 = torch.empty((n_pairs, H, W), device=device)
-
-                ptmaps11[n] = X
-                confs11[n] = C
-                n += 1
-        if canon is None:
-            canon, canon2, cconf = canonical_view(ptmaps11, confs11, subsample, **kw)
-            del ptmaps11
-            del confs11
-
-        # compute focals
-        #H, W = canon.shape[:2]
-        focal = torch.tensor([intrinsic_params['focal']], device=device)
-        pp = torch.tensor(intrinsic_params['pp'], device=device)
-
-        if cache:
-            torch.save(to_cpu(((canon, canon2, cconf), focal)), mkdir_for(cache))
 
         # extract depth offsets with correspondences
         core_depth = canon[subsample // 2::subsample, subsample // 2::subsample, 2]
         idxs, offsets = anchor_depth_offsets(canon2, pixels, subsample=subsample)
+
         canonical_views[img] = (pp, (H, W), focal.view(1), core_depth, pixels, idxs, offsets)
 
     return tmp_pairs, pairwise_scores, canonical_views, canonical_paths, preds_21
+
+# @torch.no_grad()
+# def prepare_canonical_data_knwon_calib(imgs, tmp_pairs, subsample, order_imgs=False, min_conf_thr=0,
+#                            cache_path=None, device='cuda', intrinsic_params=None, **kw):
+#     canonical_views = {}
+#     pairwise_scores = torch.zeros((len(imgs), len(imgs)), device=device)
+#     canonical_paths = []
+#     preds_21 = {}
+#     for img in tqdm(imgs):
+#         if cache_path:
+#             cache = os.path.join(cache_path, 'canon_views', hash_md5(img) + f'_{subsample=}_{kw=}.pth')
+#             canonical_paths.append(cache)
+#         try:
+#             (canon, canon2, cconf), focal = torch.load(cache, map_location=device)
+#         except IOError:
+#             # cache does not exist yet, we create it!
+#             canon = focal = None
+        
+#         # collect all pred1
+#         n_pairs = sum((img in pair) for pair in tmp_pairs)
+
+#         ptmaps11 = None
+#         pixels = {}
+#         n = 0
+#         for (img1, img2), ((path1, path2), path_corres) in tmp_pairs.items():
+#             score = None
+#             if img == img1:
+#                 X, C, X2, C2 = torch.load(path1, map_location=device)
+#                 score, (xy1, xy2, confs) = load_corres(path_corres, device, min_conf_thr)
+#                 pixels[img2] = xy1, confs
+#                 if img not in preds_21:
+#                     preds_21[img] = {}
+#                 # Subsample preds_21
+#                 preds_21[img][img2] = X2[::subsample, ::subsample].reshape(-1, 3), C2[::subsample, ::subsample].ravel()
+
+#             if img == img2:
+#                 X, C, X2, C2 = torch.load(path2, map_location=device)
+#                 score, (xy1, xy2, confs) = load_corres(path_corres, device, min_conf_thr)
+#                 pixels[img1] = xy2, confs
+#                 if img not in preds_21:
+#                     preds_21[img] = {}
+#                 preds_21[img][img1] = X2[::subsample, ::subsample].reshape(-1, 3), C2[::subsample, ::subsample].ravel()
+
+#             if score is not None:
+#                 i, j = imgs.index(img1), imgs.index(img2)
+#                 # score = score[0]
+#                 # score = np.log1p(score[2])
+#                 score = score[2]
+#                 pairwise_scores[i, j] = score
+#                 pairwise_scores[j, i] = score
+
+#                 if canon is not None:
+#                     continue
+#                 if ptmaps11 is None:
+#                     H, W = C.shape
+#                     ptmaps11 = torch.empty((n_pairs, H, W, 3), device=device)
+#                     confs11 = torch.empty((n_pairs, H, W), device=device)
+
+#                 ptmaps11[n] = X
+#                 confs11[n] = C
+#                 n += 1
+#         if canon is None:
+#             canon, canon2, cconf = canonical_view(ptmaps11, confs11, subsample, **kw)
+#             del ptmaps11
+#             del confs11
+
+#         # compute focals
+#         #H, W = canon.shape[:2]
+#         focal = torch.tensor([intrinsic_params['focal']], device=device)
+#         pp = torch.tensor(intrinsic_params['pp'], device=device)
+
+#         if cache:
+#             torch.save(to_cpu(((canon, canon2, cconf), focal)), mkdir_for(cache))
+
+#         # extract depth offsets with correspondences
+#         core_depth = canon[subsample // 2::subsample, subsample // 2::subsample, 2]
+#         idxs, offsets = anchor_depth_offsets(canon2, pixels, subsample=subsample)
+#         canonical_views[img] = (pp, (H, W), focal.view(1), core_depth, pixels, idxs, offsets)
+
+#     return tmp_pairs, pairwise_scores, canonical_views, canonical_paths, preds_21
 
 
 def load_corres(path_corres, device, min_conf_thr):

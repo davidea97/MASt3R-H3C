@@ -92,8 +92,8 @@ if __name__ == '__main__':
     if args.mask_floor:
         mask_generator = MaskGenerator(config, image_sublist, subfolders)
         print("Generating masks...")
-        objects = mask_generator.generate_masks()
-    mask_list = generate_mask_list(args.input_folder, image_sublist)
+        objects, image_ext = mask_generator.generate_masks()
+    mask_list = generate_mask_list(args.input_folder, image_sublist, image_ext=image_ext)
 
     intrinsic_params_vec = []
     dist_coeffs = []

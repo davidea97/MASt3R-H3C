@@ -427,10 +427,6 @@ def load_single_masks(folder, image_list, size, square_ok=False, verbose=True):
             W, H = mask.size
             #if intrinsics[i] is None:
             cx, cy = W // 2, H // 2
-                #print(f' - using center {cx, cy} for mask {img_name}')
-            # else:
-            #     cx, cy = intrinsics[i]['pp'][0], intrinsics[i]['pp'][1]
-                #print(f' - using given intrinsics for center {cx, cy} for mask {img_name}')
 
             if size == 224:
                 half = min(cx, cy)

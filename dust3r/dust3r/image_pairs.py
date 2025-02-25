@@ -50,11 +50,6 @@ def make_pairs(imgs, scene_graph='complete', prefilter=None, symmetrize=True):
                 pairsid.add((i, j) if i < j else (j, i))
         for i, j in pairsid:
             pairs.append((imgs[i], imgs[j]))
-    elif scene_graph.startswith('oneref'):
-        refid = int(scene_graph.split('-')[1]) if '-' in scene_graph else 0
-        for j in range(len(imgs)):
-            if j != refid:
-                pairs.append((imgs[refid], imgs[j]))
     if symmetrize:
         pairs += [(img2, img1) for img1, img2 in pairs]
 

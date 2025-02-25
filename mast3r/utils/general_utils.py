@@ -38,7 +38,7 @@ def generate_image_list(folder_path):
     return image_list, subfolders
 
 
-def generate_mask_list(folder_path, image_list):
+def generate_mask_list(folder_path, image_list, image_ext=None):
     """
     Generates a list of mask image paths organized by subfolders (e.g., camera1, camera2, etc.),
     but only includes folders that contain a "mask" subfolder.
@@ -65,7 +65,7 @@ def generate_mask_list(folder_path, image_list):
             continue
 
         # Find all .png files in the "mask" subfolder (adjust for other extensions if needed)
-        mask_paths = glob.glob(os.path.join(mask_folder, "*.png"))
+        mask_paths = glob.glob(os.path.join(mask_folder, f"*{image_ext}"))
 
         # Normalize paths to use forward slashes for compatibility
         #mask_paths = np.empty(len(image_list[i]))
@@ -109,3 +109,8 @@ def read_intrinsics(camera_folders, config, intrinsic_file="intrinsic_pars_file.
         dist_coeffs.append(np.array([k0, k1, px, py, k2]))
     
     return intrinsics, dist_coeffs
+
+
+def reshape_list(lst, N):
+    k, m = divmod(len(lst), N)
+    return [lst[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(N)]
