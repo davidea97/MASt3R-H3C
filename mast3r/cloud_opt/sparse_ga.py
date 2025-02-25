@@ -236,28 +236,28 @@ def sparse_global_alignment(imgs, pairs_in, cache_path, model, opt_process=None,
     # smartly combine all useful data
     imsizes, pps, base_focals, core_depth, anchors, corres, corres2d, preds_21 = \
         condense_data(imgs, tmp_pairs, canonical_views, preds_21, dtype)
-    
+    # print("Base focals: ", base_focals)
     base_focals = base_focals.to(device)
     scale_factor, quat_X, trans_X = None, None, None
-    if intrinsic_params is None:
-        imgs, res_coarse, res_fine = sparse_scene_optimizer(
-            imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d, preds_21, canonical_paths, mst,
-            shared_intrinsics=shared_intrinsics, cache_path=cache_path, device=device, dtype=dtype, **kw)
-    else:
-        if robot_poses is None:
-            imgs, res_coarse, res_fine = sparse_scene_optimizer_known_calib(
-                imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d, preds_21, canonical_paths, mst,
-                dist_coeffs_cam=dist_coeffs_cam, shared_intrinsics=shared_intrinsics, cache_path=cache_path, device=device, dtype=dtype, **kw)
-        else:
-            imgs, res_fine, scale_factor, trans_X, quat_X = sparse_scene_optimizer_with_robot_motion(
-                imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d, preds_21, canonical_paths, mst,
-                dist_coeffs_cam=dist_coeffs_cam, robot_poses=robot_poses, shared_intrinsics=shared_intrinsics, cache_path=cache_path, device=device, dtype=dtype, **kw)
+    # if intrinsic_params is None:
+    imgs, res_fine, scale_factor, trans_X, quat_X = sparse_scene_optimizer(
+        imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d, preds_21, canonical_paths, mst,
+        intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs_cam, robot_poses=robot_poses, shared_intrinsics=shared_intrinsics, cache_path=cache_path, device=device, dtype=dtype, **kw)
+    # else:
+    #     if robot_poses is None:
+    # imgs, res_coarse, res_fine = sparse_scene_optimizer_known_calib(
+    #     imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d, preds_21, canonical_paths, mst,
+    #     dist_coeffs_cam=dist_coeffs_cam, shared_intrinsics=shared_intrinsics, cache_path=cache_path, device=device, dtype=dtype, **kw)
+    #     else:
+    #         imgs, res_fine, scale_factor, trans_X, quat_X = sparse_scene_optimizer_with_robot_motion(
+    #             imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d, preds_21, canonical_paths, mst,
+    #             dist_coeffs_cam=dist_coeffs_cam, robot_poses=robot_poses, shared_intrinsics=shared_intrinsics, cache_path=cache_path, device=device, dtype=dtype, **kw)
     
-    return SparseGA(imgs, masks, pairs_in, res_fine or res_coarse, anchors, canonical_paths, scale_factor, trans_X, quat_X)
+    return SparseGA(imgs, masks, pairs_in, res_fine, anchors, canonical_paths, scale_factor, trans_X, quat_X)
 
 
 def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d,
-                           preds_21, canonical_paths, mst, cache_path, dist_coeffs_cam=None,
+                           preds_21, canonical_paths, mst, cache_path, intrinsic_params=None, dist_coeffs_cam=None,
                            robot_poses=None,
                            lr1=0.2, niter1=500, loss1=gamma_loss(1.1),
                            lr2=0.02, niter2=500, loss2=gamma_loss(0.4),
@@ -281,6 +281,10 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
         quat_X = torch.tensor([1.0, 0.0, 0.0, 0.0])  # Identity quaternion
         trans_X = torch.tensor([0.0, 0.0, 0.0])  # Zero translation
         scale_factor = torch.tensor(1.0)
+    else:
+        quat_X = None
+        trans_X = None
+        scale_factor = None
 
     # initialize
     ones = torch.ones((len(imgs), 1), device=device, dtype=dtype)
@@ -323,10 +327,16 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
         confs = torch.stack([torch.load(pth)[0][2].mean() for pth in canonical_paths]).to(pps)
         weighting = confs / confs.sum()
         pp = nn.Parameter((weighting @ pps).to(dtype))
-        pps = [pp for _ in range(len(imgs))]
-        focal_m = weighting @ base_focals
-        log_focal = nn.Parameter(focal_m.view(1).log().to(dtype))
-        log_focals = [log_focal for _ in range(len(imgs))]
+        if intrinsic_params is None:
+            pps = [pp for _ in range(len(imgs))]
+            focal_m = weighting @ base_focals
+            log_focal = nn.Parameter(focal_m.view(1).log().to(dtype))
+            log_focals = [log_focal for _ in range(len(imgs))]
+        else:
+            pps = [pp.detach() for _ in range(len(imgs))]
+            focal_m = weighting @ base_focals
+            log_focal = nn.Parameter(focal_m.view(1).log().to(dtype))
+            log_focals = [log_focal.detach() for _ in range(len(imgs))]
     else:
         pps = [nn.Parameter(pp.to(dtype)) for pp in pps]
         log_focals = [nn.Parameter(f.view(1).log().to(dtype)) for f in base_focals]
@@ -336,8 +346,17 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
     max_focals = 10 * diags
 
     assert len(mst[1]) == len(pps) - 1
+    
+    if intrinsic_params is not None:
+        focals = torch.cat(log_focals).exp().clip(min=min_focals, max=max_focals)
+        pps = torch.stack(pps)
+        K_fixed = torch.eye(3, dtype=dtype, device=device)[None].expand(len(imgs), 3, 3).clone()
+        K_fixed[:, 0, 0] = K_fixed[:, 1, 1] = focals
+        K_fixed[:, 0:2, 2] = pps * imsizes
+        K_fixed = K_fixed.detach()
+        
 
-    def make_K_cam_depth(log_focals, pps, trans, quats, log_sizes, core_depth):
+    def make_K_cam_depth_opt(log_focals, pps, trans, quats, log_sizes, core_depth):
         # make intrinsics
         focals = torch.cat(log_focals).exp().clip(min=min_focals, max=max_focals)
         pps = torch.stack(pps)
@@ -390,18 +409,76 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
             depthmaps.append(global_scaling * core_depth_img)
 
         return K, (inv(cam2w), cam2w), depthmaps
+    
+    def make_K_cam_depth(K_fixed, pps, trans, quats, log_sizes, core_depth):
+        
+        if trans is None:
+            return K_fixed
 
-    K = make_K_cam_depth(log_focals, pps, None, None, None, None)
+        # security! optimization is always trying to crush the scale down
+        sizes = torch.cat(log_sizes).exp()
+        global_scaling = 1 / sizes.min()
 
-    if shared_intrinsics:
-        print('init focal (shared) = ', to_numpy(K[0, 0, 0]).round(2))
+        # compute distance of camera to focal plane
+        # tan(fov) = W/2 / focal
+        z_cameras = sizes * median_depths * focals / base_focals
+
+        # make extrinsic
+        rel_cam2cam = torch.eye(4, dtype=dtype, device=device)[None].expand(len(imgs), 4, 4).clone()
+        rel_cam2cam[:, :3, :3] = roma.unitquat_to_rotmat(F.normalize(torch.stack(quats), dim=1))
+        rel_cam2cam[:, :3, 3] = torch.stack(trans)
+
+        # camera are defined as a kinematic chain
+        tmp_cam2w = [None] * len(K_fixed)
+        tmp_cam2w[mst[0]] = rel_cam2cam[mst[0]]
+        for i, j in mst[1]:
+            # i is the cam_i_to_world reference, j is the relative pose = cam_j_to_cam_i
+            tmp_cam2w[j] = tmp_cam2w[i] @ rel_cam2cam[j]
+        tmp_cam2w = torch.stack(tmp_cam2w)
+
+        # smart reparameterizaton of cameras
+        trans_offset = z_cameras.unsqueeze(1) * torch.cat((imsizes / focals.unsqueeze(1) * (0.5 - pps), ones), dim=-1)
+        new_trans = global_scaling * (tmp_cam2w[:, :3, 3:4] - tmp_cam2w[:, :3, :3] @ trans_offset.unsqueeze(-1))
+        cam2w = torch.cat((torch.cat((tmp_cam2w[:, :3, :3], new_trans), dim=2),
+                          vec0001.view(1, 1, 4).expand(len(K_fixed), 1, 4)), dim=1)
+
+        depthmaps = []
+        for i in range(len(imgs)):
+            core_depth_img = core_depth[i]
+            if exp_depth:
+                core_depth_img = core_depth_img.exp()
+            if lora_depth:  # compute core_depth as a low-rank decomposition of 3d points
+                core_depth_img = lora_depth_proj[i] @ core_depth_img
+            if depth_mode == 'add':
+                core_depth_img = z_cameras[i] + (core_depth_img - 1) * (median_depths[i] * sizes[i])
+            elif depth_mode == 'mul':
+                core_depth_img = z_cameras[i] * core_depth_img
+            else:
+                raise ValueError(f'Bad {depth_mode=}')
+            depthmaps.append(global_scaling * core_depth_img)
+
+        return K_fixed, (inv(cam2w), cam2w), depthmaps
+    
+    if intrinsic_params is None:
+        K = make_K_cam_depth_opt(log_focals, pps, None, None, None, None)
+        if shared_intrinsics:
+            print('init focal (shared) = ', to_numpy(K[0, 0, 0]).round(2))
+        else:
+            print('init focals =', to_numpy(K[:, 0, 0]))
     else:
-        print('init focals =', to_numpy(K[:, 0, 0]))
+        if shared_intrinsics:
+            print('init focal (shared) = ', to_numpy(K_fixed[0, 0, 0]).round(2))
+        else:
+            print('init focals =', to_numpy(K_fixed[:, 0, 0]))
 
     # spectral low-rank projection of depthmaps
     if lora_depth:
-        core_depth, lora_depth_proj = spectral_projection_of_depthmaps(
-            imgs, K, core_depth, subsample, cache_path=cache_path, **lora_depth)
+        if intrinsic_params is None:
+            core_depth, lora_depth_proj = spectral_projection_of_depthmaps(
+                imgs, K, core_depth, subsample, cache_path=cache_path, **lora_depth)
+        else:
+            core_depth, lora_depth_proj = spectral_projection_of_depthmaps(
+                imgs, K_fixed, core_depth, subsample, cache_path=cache_path, **lora_depth)
     if exp_depth:
         core_depth = [d.clip(min=1e-4).log() for d in core_depth]
     core_depth = [nn.Parameter(d.ravel().to(dtype)) for d in core_depth]
@@ -482,7 +559,7 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
             cf_sum = 1.
         return loss / cf_sum
 
-    def loss_2d(K, w2cam, pts3d, pix_loss):
+    def loss_2d_K_opt(K, w2cam, pts3d, pix_loss):
         # For each correspondence, we have two 3D points (one for each image of the pair).
         # For each 3D point, we have 2 reproj errors
         proj_matrix = K @ w2cam[:, :3]
@@ -497,8 +574,302 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                 npix += confs_filtered.sum()
 
         return loss / npix if npix != 0 else 0.
+    
+    def loss_2d(K_fixed, dist_coeffs_cam, w2cam, pts3d, pix_loss):
+        # For each correspondence, we have two 3D points (one for each image of the pair).
+        # For each 3D point, we have 2 reproj errors
+        #proj_matrix = K_fixed @ w2cam[:, :3]
+        proj_matrix_w_dist = w2cam[:, :3]
+        loss = npix = 0
+        for img1, pix1_filtered, confs_filtered, cf_sum, cleaned_slices in cleaned_corres2d:
+            if init[imgs[img1]].get('freeze', 0) >= 1:
+                continue  # no need
+            pts3d_in_img1 = [pts3d[img2][slice2] for img2, slice2 in cleaned_slices]
+            if pts3d_in_img1 != []:
+                pts3d_in_img1 = torch.cat(pts3d_in_img1)
+                #proj_points = reproj2d(proj_matrix[img1], pts3d_in_img1)
+                proj_points_w_dist = reproj2d_with_dist(proj_matrix_w_dist[img1], pts3d_in_img1, K_fixed, dist_coeffs_cam)
+                
+                valid_mask = torch.all(torch.abs(proj_points_w_dist) < 1e6, dim=1)  # Threshold: 1e6
+                if not valid_mask.any():
+                    print(f"Skipping image {img1} due to all invalid projections.")
+                    continue
+                pix1_filtered = pix1_filtered[valid_mask]
+                proj_points_w_dist = proj_points_w_dist[valid_mask]
+                confs_filtered = confs_filtered[valid_mask]
+                pixel_loss_component = pix_loss(pix1_filtered, proj_points_w_dist)
 
-    def optimize_loop(loss_func, lr_base, niter, pix_loss, lr_end=0):
+                loss_component = confs_filtered @ pixel_loss_component
+                if torch.isinf(loss_component):
+                    print(f"Image {img1} caused inf in loss_component.")
+                    continue  # Skip this image
+                loss += loss_component
+                npix += confs_filtered.sum()
+
+        return loss / npix if npix != 0 else 0.
+    
+    def calibration_loss(w2cam, robot_poses, scale_factor, quat_X, trans_X):
+        """
+        Loss function exploiting robot kinematics with quaternion rotation representation.
+        """
+        loss = 0.0
+
+        # Normalize quaternion
+        quat_X = quat_X / quat_X.norm()
+        X_rot = quaternion_to_matrix(quat_X)
+
+        # Ensure tensors are on the correct device and dtype
+        device = w2cam[0].device
+        dtype = w2cam[0].dtype  # Use the same dtype as w2cam tensors
+        trans_X = trans_X.to(device).to(dtype)
+        scale_factor = scale_factor.to(device).to(dtype)
+        scale_factor = torch.abs(scale_factor)
+        quat_X = quat_X.to(device).to(dtype)
+        X_rot = X_rot.to(device).to(dtype)
+
+        # Construct transformation matrix X
+        X = torch.cat([torch.cat([X_rot, trans_X.view(3, 1)], dim=1), 
+                    torch.tensor([[0, 0, 0, 1]], device=device, dtype=dtype)], dim=0)
+
+        # # R_z = torch.tensor([[-1, 0, 0, 0], 
+        # #                     [0, -1, 0, 0], 
+        # #                     [0, 0, 1, 0],
+        # #                     [0, 0, 0, 1]], device=device, dtype=dtype)
+        # R_y = torch.tensor([[-1, 0, 0, 0], 
+        #                     [0, 1, 0, 0], 
+        #                     [0, 0, -1, 0],
+        #                     [0, 0, 0, 1]], device=device, dtype=dtype)
+
+        # Compute the rotation magnitude
+        rotation_magnitude_list = []
+        for i in range(1, len(w2cam)):
+            A = robot_poses[i - 1]
+            angle_axis = matrix_to_axis_angle(A[:3, :3])
+            rotation_magnitude = torch.norm(angle_axis, dim=0)
+            rotation_magnitude_list.append(rotation_magnitude)
+        max_val = max(rotation_magnitude_list)
+        min_val = min(rotation_magnitude_list)
+        rotation_magnitude_list = [(val - min_val) / (max_val - min_val) for val in rotation_magnitude_list]
+        rotation_magnitude_list = [val**2 for val in rotation_magnitude_list]
+        for i in range(1, len(w2cam)):
+            # Compute relative pose for robot and camera
+            A = robot_poses[i - 1]
+            # B = R_z@(w2cam[i - 1]) @ torch.linalg.inv(w2cam[i]) @ R_z
+            B = w2cam[i - 1] @ torch.linalg.inv(w2cam[i]) 
+            
+            # Ensure all tensors are on the same device
+            A = A.to(device).to(dtype)
+            B = B.to(device).to(dtype)
+            B_rotated = B.clone()
+            B_rotated[:3, :3] =  B_rotated[:3, :3]
+            # Compute chain transformations
+            chain1 = A
+            chain2 = X @ B_rotated @ torch.linalg.inv(X)
+        
+            # Scale the translation part of chain2
+            chain2 = chain2.clone()
+            chain2[:3, 3] *= scale_factor
+            
+            angle_axis_camera = matrix_to_axis_angle(chain2[:3, :3])
+            rotation_magnitude_camera = torch.norm(angle_axis_camera, dim=0)
+
+            # Compute rotation loss
+            chain1_quat = matrix_to_quaternion(chain1[:3, :3])
+            chain2_quat = matrix_to_quaternion(chain2[:3, :3])
+            rotation_magnitude = rotation_magnitude_list[i - 1]
+            rotation_loss = rotation_magnitude * torch.nn.functional.mse_loss(chain1_quat, chain2_quat)
+
+            # Compute translation loss
+            translation_loss = rotation_magnitude * torch.nn.functional.mse_loss(chain1[:3, 3], chain2[:3, 3])
+            # print(f"Rotation loss {rotation_loss} - Translation loss {translation_loss}")
+            # Combine losses
+            loss += rotation_loss + translation_loss
+
+        return loss
+    
+    # def optimize_loop_with_calibration_and_2d_K_opt(
+    #     loss_3d_func,
+    #     loss_2d_func,
+    #     lr_base,
+    #     niter,
+    #     pix_loss,
+    #     calibration_loss_func,
+    #     lr_end=0,
+    #     dynamic_weights=True
+    # ):
+    #     """
+    #     Unified optimization loop integrating 3D loss, 2D reprojection loss, and calibration loss.
+    #     """
+    #     # Create separate optimizers for different parameter sets
+    #     camera_params = pps + log_focals + quats + trans + log_sizes + core_depth
+    #     calibration_params = [scale_factor, quat_X, trans_X]
+
+    #     optimizer_camera = torch.optim.Adam(camera_params, lr=1, weight_decay=0, betas=(0.9, 0.9))
+    #     optimizer_calibration = torch.optim.Adam(calibration_params, lr=1, weight_decay=0, betas=(0.9, 0.9))
+        
+    #     ploss = pix_loss if 'meta' in repr(pix_loss) else (lambda a: pix_loss)
+
+    #     with tqdm(total=niter) as bar:
+    #         for iter in range(niter or 1):
+    #             # Compute camera poses and points
+    #             K, (w2cam, cam2w), depthmaps = make_K_cam_depth_opt(log_focals, pps, trans, quats, log_sizes, core_depth)
+    #             pts3d = make_pts3d(anchors, K, cam2w, depthmaps, base_focals=base_focals)
+    #             if niter == 0:
+    #                 break
+
+    #             # Adjust learning rate
+    #             alpha = (iter / niter) # It increases over time
+
+    #             if dynamic_weights:
+    #                 weight_2d = 1.0 * (1 - alpha)  # Decrease over time
+    #                 weight_calib = 1.0 + alpha  # Increase over time
+    #                 weight_3d = 1.0  # Keep constant
+    #             else:
+    #                 weight_2d = 1.0
+    #                 weight_calib = 1.0
+    #                 weight_3d = 1.0
+
+    #             lr = schedule(alpha, lr_base, lr_end)
+    #             adjust_learning_rate_by_lr(optimizer_camera, lr)
+    #             adjust_learning_rate_by_lr(optimizer_calibration, lr)  # Lower learning rate for calibration optimizer
+
+    #             # pix_loss = ploss(1 - alpha)
+
+    #             optimizer_camera.zero_grad()
+    #             optimizer_calibration.zero_grad()
+
+    #             # Compute individual losses
+    #             reprojection_loss = loss_2d_func(w2cam, pts3d, pix_loss) + loss_dust3r_w * loss_dust3r(cam2w, pts3d, lossd)
+    #             calib_loss = calibration_loss_func(w2cam, robot_poses, scale_factor, quat_X, trans_X)
+    #             loss_3d = loss_3d_func(K, w2cam, pts3d, pix_loss)
+
+    #             # Weighted total loss
+    #             total_loss = (weight_2d * reprojection_loss +
+    #                         weight_calib * calib_loss + weight_3d * loss_3d)
+
+
+    #             # print(f"Reprojection Loss: {reprojection_loss:.6f}, Calibration Loss: {calib_loss:.6f}, 3D Loss: {loss_3d:.6f}")
+
+    #             # Backpropagation and optimization
+    #             total_loss.backward()
+    #             optimizer_camera.step()
+    #             optimizer_calibration.step()
+
+    #             # Normalize quaternions
+    #             for i in range(len(imgs)):
+    #                 quats[i].data[:] /= quats[i].data.norm()
+    #             quat_X.data = quat_X.data / quat_X.data.norm()
+
+    #             # Check for NaN or other optimization issues
+    #             loss = float(total_loss)
+    #             if loss != loss:  # NaN loss
+    #                 break
+
+    #             # Progress bar update
+    #             bar.set_postfix_str(f'{lr=:.4f}, {loss=:.3f}')
+    #             bar.update(1)
+
+    #     if niter:
+    #         print(f'>> final loss = {loss}')
+    #     return dict(
+    #         intrinsics=K.detach(),
+    #         cam2w=cam2w.detach(),
+    #         depthmaps=[d.detach() for d in depthmaps],
+    #         pts3d=[p.detach() for p in pts3d]
+    #     )
+
+    def optimize_loop_with_calibration_and_2d(
+        loss_3d_func,
+        loss_2d_func,
+        lr_base,
+        niter,
+        pix_loss,
+        calibration_loss_func,
+        lr_end=0,
+        dynamic_weights=True
+    ):
+        """
+        Unified optimization loop integrating 3D loss, 2D reprojection loss, and calibration loss.
+        """
+        # Create separate optimizers for different parameter sets
+        camera_params = quats + trans + log_sizes #+ core_depth
+        calibration_params = [scale_factor, quat_X, trans_X]
+
+        optimizer_camera = torch.optim.Adam(camera_params, lr=1, weight_decay=0, betas=(0.9, 0.9))
+        optimizer_calibration = torch.optim.Adam(calibration_params, lr=1, weight_decay=0, betas=(0.9, 0.9))
+        
+        ploss = pix_loss if 'meta' in repr(pix_loss) else (lambda a: pix_loss)
+
+        with tqdm(total=niter) as bar:
+            for iter in range(niter or 1):
+                # Compute camera poses and points
+                _, (w2cam, cam2w), depthmaps = make_K_cam_depth(K_fixed, pps, trans, quats, log_sizes, core_depth)
+                pts3d = make_pts3d(anchors, K_fixed, cam2w, depthmaps, base_focals=base_focals)
+                if niter == 0:
+                    break
+
+                # Adjust learning rate
+                alpha = (iter / niter) # It increases over time
+
+                if dynamic_weights:
+                    weight_2d = 1.0 * (1 - alpha)  # Decrease over time
+                    weight_calib = 1.0 + alpha  # Increase over time
+                    weight_3d = 1.0  # Keep constant
+                else:
+                    weight_2d = 1.0
+                    weight_calib = 1.0
+                    weight_3d = 1.0
+
+                lr = schedule(alpha, lr_base, lr_end)
+                adjust_learning_rate_by_lr(optimizer_camera, lr)
+                adjust_learning_rate_by_lr(optimizer_calibration, lr)  # Lower learning rate for calibration optimizer
+
+                # pix_loss = ploss(1 - alpha)
+
+                optimizer_camera.zero_grad()
+                optimizer_calibration.zero_grad()
+
+                # Compute individual losses
+                reprojection_loss = loss_2d_func(K_fixed, dist_coeffs_cam, w2cam, pts3d, pix_loss) + loss_dust3r_w * loss_dust3r(cam2w, pts3d, lossd)
+                calib_loss = calibration_loss_func(w2cam, robot_poses, scale_factor, quat_X, trans_X)
+                loss_3d = loss_3d_func(K_fixed, w2cam, pts3d, pix_loss)
+
+                # Weighted total loss
+                total_loss = (weight_2d * reprojection_loss +
+                            weight_calib * calib_loss + weight_3d * loss_3d)
+
+
+                # print(f"Reprojection Loss: {reprojection_loss:.6f}, Calibration Loss: {calib_loss:.6f}, 3D Loss: {loss_3d:.6f}")
+
+                # Backpropagation and optimization
+                total_loss.backward()
+                optimizer_camera.step()
+                optimizer_calibration.step()
+
+                # Normalize quaternions
+                for i in range(len(imgs)):
+                    quats[i].data[:] /= quats[i].data.norm()
+                quat_X.data = quat_X.data / quat_X.data.norm()
+
+                # Check for NaN or other optimization issues
+                loss = float(total_loss)
+                if loss != loss:  # NaN loss
+                    break
+
+                # Progress bar update
+                bar.set_postfix_str(f'{lr=:.4f}, {loss=:.3f}')
+                bar.update(1)
+
+        if niter:
+            print(f'>> final loss = {loss}')
+        return dict(
+            intrinsics=K_fixed,
+            cam2w=cam2w.detach(),
+            depthmaps=[d.detach() for d in depthmaps],
+            pts3d=[p.detach() for p in pts3d]
+        )
+
+    def optimize_loop_K_opt(loss_func, lr_base, niter, pix_loss, lr_end=0):
         # create optimizer
         params = pps + log_focals + quats + trans + log_sizes + core_depth
         optimizer = torch.optim.Adam(params, lr=1, weight_decay=0, betas=(0.9, 0.9))
@@ -506,7 +877,7 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
 
         with tqdm(total=niter) as bar:
             for iter in range(niter or 1):
-                K, (w2cam, cam2w), depthmaps = make_K_cam_depth(log_focals, pps, trans, quats, log_sizes, core_depth)
+                K, (w2cam, cam2w), depthmaps = make_K_cam_depth_opt(log_focals, pps, trans, quats, log_sizes, core_depth)
                 pts3d = make_pts3d(anchors, K, cam2w, depthmaps, base_focals=base_focals)
                 if niter == 0:
                     break
@@ -534,39 +905,155 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
             print(f'>> final loss = {loss}')
         return dict(intrinsics=K.detach(), cam2w=cam2w.detach(),
                     depthmaps=[d.detach() for d in depthmaps], pts3d=[p.detach() for p in pts3d])
+    
+    def optimize_loop(loss_func, lr_base, niter, pix_loss, lr_end=0):
+        # create optimizer
+        params = quats + trans + log_sizes + core_depth
+        optimizer = torch.optim.Adam(params, lr=1, weight_decay=0, betas=(0.9, 0.9))
+        ploss = pix_loss if 'meta' in repr(pix_loss) else (lambda a: pix_loss)
 
-    # at start, don't optimize 3d points
-    for i, img in enumerate(imgs):
-        trainable = not (init[img].get('freeze'))
-        pps[i].requires_grad_(False)
-        log_focals[i].requires_grad_(False)
-        quats[i].requires_grad_(trainable)
-        trans[i].requires_grad_(trainable)
-        log_sizes[i].requires_grad_(trainable)
-        core_depth[i].requires_grad_(False)
+        with tqdm(total=niter) as bar:
+            for iter in range(niter or 1):
+                _, (w2cam, cam2w), depthmaps = make_K_cam_depth(K_fixed, pps, trans, quats, log_sizes, core_depth)
+                pts3d = make_pts3d(anchors, K_fixed, cam2w, depthmaps, base_focals=base_focals)
+                if niter == 0:
+                    break
 
-    res_coarse = optimize_loop(loss_3d, lr_base=lr1, niter=niter1, pix_loss=loss1)
+                alpha = (iter / niter)
+                lr = schedule(alpha, lr_base, lr_end)
+                adjust_learning_rate_by_lr(optimizer, lr)
+                pix_loss = ploss(1 - alpha)
+                optimizer.zero_grad()
+                loss = loss_func(K_fixed, w2cam, pts3d, pix_loss) + loss_dust3r_w * loss_dust3r(cam2w, pts3d, lossd)
+                loss.backward()
+                optimizer.step()
 
-    res_fine = None
-    if niter2:
-        # now we can optimize 3d points
+                # make sure the pose remains well optimizable
+                for i in range(len(imgs)):
+                    quats[i].data[:] /= quats[i].data.norm()
+
+                loss = float(loss)
+                if loss != loss:
+                    break  # NaN loss
+                bar.set_postfix_str(f'{lr=:.4f}, {loss=:.3f}')
+                bar.update(1)
+
+        if niter:
+            print(f'>> final loss = {loss}')
+        return dict(intrinsics=K_fixed, cam2w=cam2w.detach(),
+                    depthmaps=[d.detach() for d in depthmaps], pts3d=[p.detach() for p in pts3d])
+
+    # If robot poses are not provided, optimize only 3D points without calibration
+    if robot_poses is None:
+        # at start, don't optimize 3d points
         for i, img in enumerate(imgs):
-            if init[img].get('freeze', 0) >= 1:
-                continue
-            pps[i].requires_grad_(bool(opt_pp))
-            log_focals[i].requires_grad_(True)
-            core_depth[i].requires_grad_(True)
+            trainable = not (init[img].get('freeze'))
+            if intrinsic_params is None:
+                pps[i].requires_grad_(False)
+                log_focals[i].requires_grad_(False)
+            else: 
+                pps[i] = pps[i].detach()
+                log_focals[i] = log_focals[i].detach()
 
-        # refinement with 2d reproj
-        res_fine = optimize_loop(loss_2d, lr_base=lr2, niter=niter2, pix_loss=loss2)
+            quats[i].requires_grad_(trainable)
+            trans[i].requires_grad_(trainable)
+            log_sizes[i].requires_grad_(trainable)
+            core_depth[i].requires_grad_(False)
 
-    K = make_K_cam_depth(log_focals, pps, None, None, None, None)
-    if shared_intrinsics:
-        print('Final focal (shared) = ', to_numpy(K[0, 0, 0]).round(2))
+        # log_focals = torch.tensor(log_focals, dtype=pps.dtype, device=pps.device)
+        if intrinsic_params is not None:
+            res_coarse = optimize_loop(
+                lambda _, w2cam, pts3d, pix_loss: loss_3d(K_fixed, w2cam, pts3d, pix_loss),
+                lr_base=lr1,
+                niter=niter1,
+                pix_loss=loss1,
+            )
+        else:
+            res_coarse = optimize_loop_K_opt(loss_3d, lr_base=lr1, niter=niter1, pix_loss=loss1)
+
+        res_fine = None
+        if niter2:
+            # now we can optimize 3d points
+            for i, img in enumerate(imgs):
+                if init[img].get('freeze', 0) >= 1:
+                    continue
+                if intrinsic_params is None:
+                    pps[i].requires_grad_(bool(opt_pp))
+                    log_focals[i].requires_grad_(True)
+                    core_depth[i].requires_grad_(True)
+
+            # refinement with 2d reproj
+            if intrinsic_params is not None:
+                # res_fine = optimize_loop(loss_2d, lr_base=lr2, niter=niter2, pix_loss=loss2)
+                res_fine = optimize_loop(
+                    lambda _, w2cam, pts3d, pix_loss: loss_2d(K_fixed, dist_coeffs_cam, w2cam, pts3d, pix_loss),
+                    lr_base=lr2,
+                    niter=niter2,
+                    pix_loss=loss2
+                )
+            else:
+                res_fine = optimize_loop_K_opt(loss_2d_K_opt, lr_base=lr2, niter=niter2, pix_loss=loss2)
+        if intrinsic_params is None:
+            K = make_K_cam_depth_opt(log_focals, pps, None, None, None, None)
+            if shared_intrinsics:
+                print('Final focal (shared) = ', to_numpy(K[0, 0, 0]).round(2))
+            else:
+                print('Final focals =', to_numpy(K[:, 0, 0]))
+        else:
+            if shared_intrinsics:
+                print('Final focal (shared) = ', to_numpy(K_fixed[0, 0, 0]).round(2))
+            else:
+                print('Final focals =', to_numpy(K_fixed[:, 0, 0]))
+
+        return imgs, res_fine, scale_factor, trans_X, quat_X
+
     else:
-        print('Final focals =', to_numpy(K[:, 0, 0]))
+        if intrinsic_params is not None:
+            # at start, don't optimize 3d points
+            for i, img in enumerate(imgs):
+                trainable = not (init[img].get('freeze'))
+                pps[i] = pps[i].detach()
+                log_focals[i] = log_focals[i].detach()
 
-    return imgs, res_coarse, res_fine
+                quats[i].requires_grad_(trainable)
+                trans[i].requires_grad_(trainable)
+                log_sizes[i].requires_grad_(trainable)
+                
+
+            quat_X.requires_grad_(True)
+            trans_X.requires_grad_(True)
+            scale_factor.requires_grad_(True)
+
+            res_fine = None
+            
+            res_fine = optimize_loop_with_calibration_and_2d(
+                lambda _, w2cam, pts3d, pix_loss: loss_3d(K_fixed, w2cam, pts3d, pix_loss),
+                lambda K_fixed, dist_coeffs, w2cam, pts3d, pix_loss: loss_2d(K_fixed, dist_coeffs, w2cam, pts3d, pix_loss),
+                lr_base=lr1,
+                niter=niter1,
+                pix_loss=loss2,
+                calibration_loss_func=calibration_loss,
+                dynamic_weights=True
+            )
+
+            scale_factor = abs(scale_factor)
+            print("Scale factor: ", scale_factor)
+            print("Quat X: ", quat_X)
+            print("Tras X: ", trans_X)
+            print("Scaled translation: ", scale_factor*trans_X)
+
+            if shared_intrinsics:
+                print('Final focal (shared) = ', to_numpy(K_fixed[0, 0, 0]).round(2))
+            else:
+                print('Final focals =', to_numpy(K_fixed[:, 0, 0]))
+
+        else:
+            print("ATTENTION: Intrinsic params must be provided.")
+
+        return imgs, res_fine, scale_factor, trans_X, quat_X
+
+
+    
 
 
 def sparse_scene_optimizer_known_calib(imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d,
@@ -650,7 +1137,6 @@ def sparse_scene_optimizer_known_calib(imgs, subsample, imsizes, pps, base_focal
     K_fixed[:, 0, 0] = K_fixed[:, 1, 1] = focals
     K_fixed[:, 0:2, 2] = pps * imsizes
     K_fixed = K_fixed.detach()
-    print("K FIXED: ", K_fixed)
     def make_K_cam_depth(K_fixed, pps, trans, quats, log_sizes, core_depth):
         
         if trans is None:
@@ -1000,7 +1486,6 @@ def sparse_scene_optimizer_with_robot_motion(imgs, subsample, imsizes, pps, base
     K_fixed[:, 0, 0] = K_fixed[:, 1, 1] = focals
     K_fixed[:, 0:2, 2] = pps * imsizes
     K_fixed = K_fixed.detach()
-    print("K FIXED: ", K_fixed)
     def make_K_cam_depth(K_fixed, pps, trans, quats, log_sizes, core_depth):
         
         if trans is None:
@@ -1638,10 +2123,11 @@ def prepare_canonical_data(imgs, tmp_pairs, subsample, order_imgs=False, min_con
         folder_imgs = reshape_list(imgs, len(intrinsic_params))
     else:
         folder_imgs = [imgs]
-        intrinsic_params = [intrinsic_params]
+        if intrinsic_params is not None:
+            intrinsic_params = [intrinsic_params]
 
-    print("Folder images length: ", len(folder_imgs))
-    print("Folder images: ", folder_imgs)
+    # print("Folder images length: ", len(folder_imgs))
+    # print("Folder images: ", folder_imgs)
 
     for img in tqdm(imgs):
         found = False
@@ -1649,7 +2135,6 @@ def prepare_canonical_data(imgs, tmp_pairs, subsample, order_imgs=False, min_con
         for i, folder_list in enumerate(folder_imgs):  
             if img in folder_list:
                 selected_list = i
-                print("Selected list: ", selected_list)
                 found = True
                 break  # Stop searching once found
         if not found:

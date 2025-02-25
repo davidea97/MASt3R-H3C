@@ -309,7 +309,7 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
     then run get_3D_model_from_scene
     """
     
-    folder_list = reshape_list(flattened_filelist, len(robot_poses))
+    # folder_list = reshape_list(flattened_filelist, len(robot_poses))
 
     msks = None
     flattened_imgs, _ = load_single_images(flattened_filelist, config['image_size'], verbose=not config['silent'])
