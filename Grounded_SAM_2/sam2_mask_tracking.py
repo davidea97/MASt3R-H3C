@@ -50,7 +50,7 @@ class MaskGenerator:
     def generate_masks(self):
 
         _, ext_example = os.path.splitext(self.image_list[0][0])
-        for i, subfolder in enumerate(self.subfolders[:1]):
+        for i, subfolder in enumerate(self.subfolders):
             print(f"> Processing subfolder {subfolder}")
 
             # Create the output_folders

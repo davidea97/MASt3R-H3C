@@ -66,7 +66,6 @@ def generate_mask_list(folder_path, image_list, image_ext=None):
 
         # Find all .png files in the "mask" subfolder (adjust for other extensions if needed)
         mask_paths = glob.glob(os.path.join(mask_folder, f"*{image_ext}"))
-
         # Normalize paths to use forward slashes for compatibility
         #mask_paths = np.empty(len(image_list[i]))
         mask_paths = [path.replace("\\", "/") for path in mask_paths]

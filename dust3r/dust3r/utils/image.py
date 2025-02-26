@@ -405,12 +405,22 @@ def load_single_masks(folder, image_list, size, square_ok=False, verbose=True):
     
     # Sort the paths to ensure consistent ordering
     mask_paths.sort()
+    
+    # mask_filenames = {os.path.splitext(os.path.basename(path))[0]: path for path in mask_paths}
+    mask_filenames = {
+        os.path.join(os.path.basename(os.path.dirname(os.path.dirname(path))), os.path.splitext(os.path.basename(path))[0]): path
+        for path in mask_paths
+    }
 
-    mask_filenames = {os.path.splitext(os.path.basename(path))[0]: path for path in mask_paths}
-    img_filenames = {os.path.splitext(os.path.basename(path))[0]: path for path in image_list}
+    # img_filenames = {os.path.splitext(os.path.basename(path))[0]: path for path in image_list}
+    img_filenames = {
+        os.path.join(os.path.basename(os.path.dirname(os.path.dirname(path))), os.path.splitext(os.path.basename(path))[0]): path
+        for path in image_list
+    }
 
     # Align masks with the image list
     for img_name in img_filenames:
+
         mask_path = mask_filenames.get(img_name, None)
 
         if mask_path:
@@ -448,5 +458,4 @@ def load_single_masks(folder, image_list, size, square_ok=False, verbose=True):
                 print(f' - No mask found for {img_name}')
             aligned_masks.append(None)  # Append None if mask is missing
     aligned_masks_total.append(aligned_masks)
-
     return aligned_masks_total

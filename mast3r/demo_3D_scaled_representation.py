@@ -32,7 +32,7 @@ from dust3r.demo import get_args_parser as dust3r_get_args_parser
 from mast3r.utils.general_utils import reshape_list
 import matplotlib.pyplot as pl
 
-PROCESS_ALL_IMAGES = "Process All"
+PROCESS_ALL_IMAGES = "Multi-Camera"
 class SparseGAState():
     def __init__(self, sparse_ga, should_delete=False, cache_dir=None, outfile_name=None):
         self.sparse_ga = sparse_ga
@@ -226,7 +226,9 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
     # get optimized values from scene
     scene = scene_state.sparse_ga
     rgbimg = scene.imgs
+    print("PRe len of masks: ", len(scene.masks))
     masks = scene.masks[0]
+    print("Lneght of masks: ", len(masks))
     focals = scene.get_focals().cpu()
     cams2world = scene.get_im_poses().cpu()
     scale_factor = scene.get_scale_factor()
@@ -301,7 +303,7 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
 
 
 def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, config, 
-                            current_scene_state, flattened_filelist, opt_process, intrinsic_params, dist_coeffs, mask_list, robot_poses, optim_level, lr1, niter1, as_pointcloud, mask_sky, 
+                            current_scene_state, flattened_filelist, opt_process, camera_num, intrinsic_params, dist_coeffs, mask_list, robot_poses, optim_level, lr1, niter1, as_pointcloud, mask_sky, 
                             mask_floor, clean_depth, transparent_cams, scenegraph_type, winsize,
                             win_cyclic, **kw):
     """
@@ -340,8 +342,12 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
     else:
         cache_dir = os.path.join(outdir, 'cache')
     os.makedirs(cache_dir, exist_ok=True)
+
+    if isinstance(intrinsic_params, list) and all(item is None for item in intrinsic_params):
+        intrinsic_params = None
+
     scene = sparse_global_alignment(flattened_filelist, pairs, cache_dir,
-                                    model, opt_process, flattened_msks, intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs, 
+                                    model, opt_process, camera_num, flattened_msks, intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs, 
                                     robot_poses=robot_poses, lr1=lr1, niter1=niter1, device=device,
                                     opt_depth=optim_level, shared_intrinsics=config['shared_intrinsics'],
                                     matching_conf_thr=config['matching_conf_thr'], **kw)
@@ -386,7 +392,7 @@ def set_scenegraph_options(inputfiles, win_cyclic, scenegraph_type):
     return win_col, winsize, win_cyclic
 
 
-def main_demo(tmpdirname, model, config, device, server_name, server_port, image_list=None, mask_list=None, silent=False, intrinsic_params_vec=None, dist_coeffs=None, robot_poses=None,
+def main_demo(tmpdirname, model, config, device, server_name, server_port, image_list=None, mask_list=None, silent=False, camera_num=None, intrinsic_params_vec=None, dist_coeffs=None, robot_poses=None,
               share=False, gradio_delete_cache=False):
     
     if not silent:
@@ -409,7 +415,7 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                    winsize, win_cyclic):
         if isinstance(input_images, list) and all(isinstance(img, str) for img in input_images):
             # Single list of images
-            return recon_fun(scene, input_images, opt_process, intrinsic_params, dist_coeff, masks, robot_pose, optim_level,
+            return recon_fun(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, masks, robot_pose, optim_level,
                             lr1, niter1, as_pointcloud, mask_sky, mask_floor, clean_depth, transparent_cams, scenegraph_type,
                             winsize, win_cyclic)
         
@@ -427,7 +433,7 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                 
                 # Dropdown to select the image list
                 list_selector = gradio.Dropdown(
-                    choices=[PROCESS_ALL_IMAGES] + [f"List {i+1}" for i in range(len(image_list))],
+                    choices=[PROCESS_ALL_IMAGES] + [f"Camera {i+1}" for i in range(len(image_list))],
                     value="Select the image list to process",
                     label="Select Image List",
                 )
@@ -442,7 +448,7 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                         robot_pose = robot_poses if robot_poses else None
                         masks = mask_list if mask_list else None
                         formatted_list = "\n\n".join(
-                            [f"List {i+1}:\n" + "\n".join(img_list) for i, img_list in enumerate(selected_images)]
+                            [f"Camera {i+1}:\n" + "\n".join(img_list) for i, img_list in enumerate(selected_images)]
                         )
                         selected_images_flat = [img for sublist in selected_images for img in sublist]
 
