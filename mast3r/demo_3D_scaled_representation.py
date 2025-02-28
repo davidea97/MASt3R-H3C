@@ -226,9 +226,7 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
     # get optimized values from scene
     scene = scene_state.sparse_ga
     rgbimg = scene.imgs
-    print("PRe len of masks: ", len(scene.masks))
     masks = scene.masks[0]
-    print("Lneght of masks: ", len(masks))
     focals = scene.get_focals().cpu()
     cams2world = scene.get_im_poses().cpu()
     scale_factor = scene.get_scale_factor()
@@ -410,7 +408,7 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
         else:
             return gradio.Blocks(css=css, title="MASt3R-HEC Demo")  # for compatibility with older versions
 
-    def process_images(scene, input_images, opt_process, intrinsic_params, dist_coeff, masks, robot_pose, optim_level, lr1, niter1,
+    def process_images(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, masks, robot_pose, optim_level, lr1, niter1,
                    as_pointcloud, mask_sky, mask_floor, clean_depth, transparent_cams, scenegraph_type,
                    winsize, win_cyclic):
         if isinstance(input_images, list) and all(isinstance(img, str) for img in input_images):
@@ -450,6 +448,7 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                         formatted_list = "\n\n".join(
                             [f"Camera {i+1}:\n" + "\n".join(img_list) for i, img_list in enumerate(selected_images)]
                         )
+                        camera_num = len(selected_images)
                         selected_images_flat = [img for sublist in selected_images for img in sublist]
 
                     else:
@@ -457,12 +456,13 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                         index = int(selected_list.split()[1]) - 1
                         selected_images = image_list[index]
                         intrinsic_params = intrinsic_params_vec[index] if intrinsic_params_vec else None
-                        dist_coeff = dist_coeffs[index] if dist_coeffs else None
+                        dist_coeff = [dist_coeffs[index]] if dist_coeffs else None
                         robot_pose = robot_poses[index] if robot_poses else None
                         masks = mask_list[index] if mask_list else None
                         formatted_list = "\n".join(selected_images) if isinstance(selected_images, list) else "Processing all image lists."
                         selected_images_flat = selected_images
-                    return formatted_list, selected_images_flat, intrinsic_params, dist_coeff, robot_pose, masks, selected_list
+                        camera_num = 1
+                    return formatted_list, selected_images_flat, intrinsic_params, dist_coeff, robot_pose, masks, selected_list, camera_num
 
                 
                 # Dynamically display the selected image paths
@@ -478,12 +478,13 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                 masks_state = gradio.State(None)
                 opt_process_state = gradio.State(None)
                 inputfiles = gradio.State(None)
+                camera_num = gradio.State(None)
 
                 # Update handlers for list selection
                 list_selector.change(
                     fn=update_image_list,
                     inputs=list_selector,
-                    outputs=[selected_image_paths, inputfiles, intrinsic_state, dist_coeff_state, robot_pose_state, masks_state, opt_process_state]
+                    outputs=[selected_image_paths, inputfiles, intrinsic_state, dist_coeff_state, robot_pose_state, masks_state, opt_process_state, camera_num]
                 )
             else:
                 # Placeholder for dynamically updated file input
@@ -571,7 +572,7 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
 
             run_btn.click(
                 fn=process_images,
-                inputs=[scene, inputfiles, opt_process_state, intrinsic_state, dist_coeff_state, masks_state, robot_pose_state, optim_level, lr1, niter1, as_pointcloud, mask_sky, mask_floor,
+                inputs=[scene, inputfiles, opt_process_state, camera_num, intrinsic_state, dist_coeff_state, masks_state, robot_pose_state, optim_level, lr1, niter1, as_pointcloud, mask_sky, mask_floor,
                         clean_depth, transparent_cams, scenegraph_type, winsize, win_cyclic],
                 outputs=[scene, outmodel, outgallery]
             )
