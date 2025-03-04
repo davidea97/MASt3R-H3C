@@ -751,22 +751,8 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
         Unified optimization loop integrating 3D loss, 2D reprojection loss, and calibration loss.
         """
         # Create separate optimizers for different parameter sets
-        # print("Quats: ", quats)
-        # print("Trans: ", trans)
-        # print("Flattened log sizes: ", flattened_log_sizes)
-        camera_params = quats + trans + flattened_log_sizes #+ core_depth
-        # print("Scale factor: ", scale_factor)
-        # print("Quat X: ", quat_X)
-        # print("Trans X: ", trans_X)
-        # calibration_params = [scale_factor, quat_X, trans_X]
+        camera_params = quats + trans + flattened_log_sizes
         calibration_params = scale_factor + quat_X + trans_X
-        
-        # calibration_params = [param for sublist in calibration_params for param in sublist]
-        # print("Camera Params:", [p.shape for p in camera_params if p.requires_grad])
-        # print("Calibration Params:", [p.shape for p in calibration_params if p.requires_grad])
-
-        # for param in calibration_params:
-        #     print(f"Param shape: {param.shape}, requires_grad: {param.requires_grad}")
 
         optimizer_camera = torch.optim.Adam(camera_params, lr=1, weight_decay=0, betas=(0.9, 0.9))
         optimizer_calibration = torch.optim.Adam(calibration_params, lr=1, weight_decay=0, betas=(0.9, 0.9))
@@ -811,8 +797,6 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                 total_loss = (weight_2d * reprojection_loss +
                             weight_calib * calib_loss + weight_3d * loss_3d)
 
-                # print(f"Reprojection Loss: {reprojection_loss:.6f}, Calibration Loss: {calib_loss:.6f}, 3D Loss: {loss_3d:.6f}")
-
                 # Backpropagation and optimization
                 total_loss.backward()
                 optimizer_camera.step()
@@ -823,7 +807,6 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                     quats[i].data[:] /= quats[i].data.norm()
                 for i in range(len(scale_factor)):
                     quat_X[i].data = quat_X[i].data / quat_X[i].data.norm()
-                # quat_X.data = quat_X.data / quat_X.data.norm()
 
                 # Check for NaN or other optimization issues
                 loss = float(total_loss)
@@ -1015,13 +998,6 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                 calibration_loss_func=calibration_loss,
                 dynamic_weights=True
             )
-
-            # scale_factor = abs(scale_factor)
-            # print("Scale factor: ", scale_factor)
-            # print("Quat X: ", quat_X)
-            # print("Tras X: ", trans_X)
-            # for i in range(camera_num):
-            #     print(f"Scaled translation {i+1}: {scale_factor[i]*trans_X[i]}")
 
             if shared_intrinsics:
                 print('Final focal (shared) = ', to_numpy(K_fixed[0, 0, 0]).round(2))

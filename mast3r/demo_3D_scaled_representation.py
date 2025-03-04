@@ -409,10 +409,13 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
         with gradio.Column():
             if image_list:
                 gradio.HTML('<h3>Provided Images:</h3>')
-                
+                if len(image_list) > 1:
+                    choices = [PROCESS_ALL_IMAGES] + [f"Camera {i+1}" for i in range(len(image_list))]
+                else:
+                    choices = [f"Camera {i+1}" for i in range(len(image_list))]
                 # Dropdown to select the image list
                 list_selector = gradio.Dropdown(
-                    choices=[PROCESS_ALL_IMAGES] + [f"Camera {i+1}" for i in range(len(image_list))],
+                    choices=choices,
                     value="Select the image list to process",
                     label="Select Image List",
                 )
