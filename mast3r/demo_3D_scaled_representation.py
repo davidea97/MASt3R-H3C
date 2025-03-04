@@ -227,10 +227,10 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
     h2e_list = []
     if scale_factor is not None:
         
-        print(f"Estimated scale factor: {scale_factor}")
-        print(f"Estimated quaternion X: {quat_X}")
-        print(f"Estimated translation X: {trans_X}")
-        print(f"Estimated scaled translation X: {[scale_factor[i]*trans_X[i] for i in range(len(scale_factor))]}")
+        # print(f"Estimated scale factor: {scale_factor}")
+        # print(f"Estimated quaternion X: {quat_X}")
+        # print(f"Estimated translation X: {trans_X}")
+        # print(f"Estimated scaled translation X: {[scale_factor[i]*trans_X[i] for i in range(len(scale_factor))]}")
         for i in range(len(scale_factor)):
             scale_factor[i] = abs(scale_factor[i])
             quat_np = quat_X[i].detach().cpu().numpy()  # Convert PyTorch tensor to NumPy

@@ -675,15 +675,7 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
         dtype = w2cam[0].dtype  # Use the same dtype as w2cam tensors
     
         for i in range(len(scale_factor)):
-            # Normalize quaternion
-            # quat_X[i] = quat_X[i] / quat_X[i].norm()
             X_rot = quaternion_to_matrix(quat_X[i])
-
-            # trans_X[i] = trans_X[i].to(device).to(dtype)
-            # scale_factor[i] = scale_factor[i].to(device).to(dtype)
-            # scale_factor[i] = torch.abs(scale_factor[i])
-            # quat_X[i] = quat_X[i].to(device).to(dtype)
-            # X_rot = X_rot.to(device).to(dtype)
 
             # Construct transformation matrix X
             X = torch.cat([torch.cat([X_rot, trans_X[i].view(3, 1)], dim=1), 
@@ -715,9 +707,6 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
         rotation_magnitude_list = [val**2 for val in rotation_magnitude_list]
         for cam_idx in range(camera_num):
             for i in range(1, len(wcam_reshaped[cam_idx])):
-                # Compute relative pose for robot and camera
-                # A = robot_poses[i - 1]
-                # B = R_z@(w2cam[i - 1]) @ torch.linalg.inv(w2cam[i]) @ R_z
                 A = A_list[cam_idx][i - 1]
                 B = B_List[cam_idx][i - 1]
                 
@@ -728,15 +717,11 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                 B_rotated[:3, :3] =  B_rotated[:3, :3]
                 # Compute chain transformations
                 chain1 = A
-                # idx =  i // len(w2cam)
                 chain2 = X_list[cam_idx] @ B_rotated @ torch.linalg.inv(X_list[cam_idx])
             
                 # Scale the translation part of chain2
                 chain2 = chain2.clone()
                 chain2[:3, 3] *= torch.abs(scale_factor[cam_idx])
-                
-                angle_axis_camera = matrix_to_axis_angle(chain2[:3, :3])
-                # rotation_magnitude_camera = torch.norm(angle_axis_camera, dim=0)
 
                 # Compute rotation loss
                 chain1_quat = matrix_to_quaternion(chain1[:3, :3])
@@ -746,7 +731,7 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
 
                 # Compute translation loss
                 translation_loss = rotation_magnitude * torch.nn.functional.mse_loss(chain1[:3, 3], chain2[:3, 3])
-                # print(f"Rotation loss {rotation_loss} - Translation loss {translation_loss}")
+
                 # Combine losses
                 loss += rotation_loss + translation_loss
 
