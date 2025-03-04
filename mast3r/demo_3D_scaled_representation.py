@@ -68,7 +68,7 @@ def get_args_parser():
 
 def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, all_msk_obj, focals, cams2world, cam_size,
                                  cam_color=None, as_pointcloud=False,
-                                 transparent_cams=False, silent=False, mask_floor=True):
+                                 transparent_cams=False, silent=False, mask_floor=True, h2e_list=None, opt_process=None, scale_factor=None):
     assert len(pts3d) == len(mask) <= len(imgs) <= len(cams2world) == len(focals)
     pts3d = to_numpy(pts3d)
     imgs = to_numpy(imgs)
@@ -76,18 +76,17 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
     cams2world = to_numpy(cams2world)
 
     scene = trimesh.Scene()
-
-    array_of_arrays = np.array([[None for _ in range(len(all_pts3d_object))] for _ in range(1)], dtype=object)
-    for i, pts3d_object in enumerate(all_pts3d_object):
-        array = []
-        for j in range(1):
-            if j < len(pts3d_object):
-                array_of_arrays[j][i] = pts3d_object[j]
-            else:
-                array_of_arrays[j][i] = None
-            
-    all_pts3d_object = array_of_arrays
-
+    if all_pts3d_object is not None:
+        array_of_arrays = np.array([[None for _ in range(len(all_pts3d_object))] for _ in range(1)], dtype=object)
+        for i, pts3d_object in enumerate(all_pts3d_object):
+            array = []
+            for j in range(1):
+                if j < len(pts3d_object):
+                    array_of_arrays[j][i] = pts3d_object[j]
+                else:
+                    array_of_arrays[j][i] = None
+                
+        all_pts3d_object = array_of_arrays
 
     # full pointcloud
     if as_pointcloud:
@@ -98,82 +97,71 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
         valid_msk = np.isfinite(pts.sum(axis=1))
         valid_pts = pts[valid_msk]
         valid_col = col[valid_msk]
-
-        for i, pts3d_object in enumerate(all_pts3d_object):
-            if pts3d_object is not None:
-                pts3d_object = to_numpy(pts3d_object)
-                
-                valid_pts3d_object = [p for p in pts3d_object if p is not None]
-
-                # Perform the concatenation only on valid (non-None) points
-                pts_obj = np.concatenate([p[m.ravel()] for p, m in zip(valid_pts3d_object, all_msk_obj[i])]).reshape(-1, 3)
-                # col_obj = np.ones_like(pts_obj) * [1, 0, 0]
-                valid_mask_obj = np.isfinite(pts_obj.sum(axis=1))
-                valid_pts_obj = pts_obj[valid_mask_obj]
-
-                # Generate a random color (RGB values between 0 and 1)
-                random_color = np.random.rand(3)  # Random color for the object
-                if mask_floor:
+        if all_pts3d_object is not None:
+            for i, pts3d_object in enumerate(all_pts3d_object):
+                if pts3d_object is not None:
+                    pts3d_object = to_numpy(pts3d_object)
                     
-                    # Prepare Open3D point cloud and apply RANSAC for plane fitting
-                    pcd = o3d.geometry.PointCloud()
-                    pcd.points = o3d.utility.Vector3dVector(valid_pts_obj)
+                    valid_pts3d_object = [p for p in pts3d_object if p is not None]
 
-                    # Apply RANSAC for ground plane segmentation
-                    plane_model, inliers = pcd.segment_plane(distance_threshold=0.01, ransac_n=5, num_iterations=1000)
-                    a, b, c, d = plane_model
-                    obj_color_mask = np.isin(valid_pts, valid_pts_obj, assume_unique=False).all(axis=1)
+                    # Perform the concatenation only on valid (non-None) points
+                    pts_obj = np.concatenate([p[m.ravel()] for p, m in zip(valid_pts3d_object, all_msk_obj[i])]).reshape(-1, 3)
+                    # col_obj = np.ones_like(pts_obj) * [1, 0, 0]
+                    valid_mask_obj = np.isfinite(pts_obj.sum(axis=1))
+                    valid_pts_obj = pts_obj[valid_mask_obj]
 
-                    # valid_col[obj_color_mask] = [1, 0, 0]  # Red color for object points
-                    valid_col[obj_color_mask] = random_color  # Random color for object points
+                    # Generate a random color (RGB values between 0 and 1)
+                    random_color = np.random.rand(3)  # Random color for the object
+                    if opt_process == "Mobile-robot":
+                        
+                        # Prepare Open3D point cloud and apply RANSAC for plane fitting
+                        pcd = o3d.geometry.PointCloud()
+                        pcd.points = o3d.utility.Vector3dVector(valid_pts_obj)
 
-                pct_updated = trimesh.PointCloud(valid_pts, colors=valid_col)
-                scene.add_geometry(pct_updated)
-            
-            camera_poses = cams2world  
-            camera_frames = []
-            heights = []
+                        # Apply RANSAC for ground plane segmentation
+                        plane_model, inliers = pcd.segment_plane(distance_threshold=0.01, ransac_n=5, num_iterations=1000)
+                        a, b, c, d = plane_model
+                        obj_color_mask = np.isin(valid_pts, valid_pts_obj, assume_unique=False).all(axis=1)
+                        if mask_floor:
+                            # valid_col[obj_color_mask] = [1, 0, 0]  # Red color for object points
+                            valid_col[obj_color_mask] = random_color  # Random color for object points
 
-            for i, pose in enumerate(camera_poses):
-                if i == 0:
-                    camera_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=[0, 0, 0])
-                else:
-                    camera_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
-                camera_frame.transform(pose)  
-                camera_frames.append(camera_frame)
-                camera_position = pose[:3, 3]
-                x, y, z = camera_position
+        pct_updated = trimesh.PointCloud(valid_pts, colors=valid_col)
+        scene.add_geometry(pct_updated)
+        
+        camera_poses = cams2world  
+        camera_frames = []
+        heights = []
 
-                if mask_floor:
-                    height = abs(a * x + b * y + c * z + d) / np.sqrt(a**2 + b**2 + c**2)
-                    heights.append(height)
-                    print(f"Height of the camera {i} w.r.t. the ground: {height}")
-        else: 
-            # Prepare Open3D point cloud and apply RANSAC for plane fitting
-            pcd = o3d.geometry.PointCloud()
+        for i, pose in enumerate(camera_poses):
+            if i == 0:
+                camera_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=[0, 0, 0])
+            else:
+                camera_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
+            camera_frame.transform(pose)  
+            camera_frames.append(camera_frame)
+            camera_position = pose[:3, 3]
+            x, y, z = camera_position
 
-            pcd.points = o3d.utility.Vector3dVector(pts)
-            # Apply RANSAC for ground plane segmentation
-            plane_model, inliers = pcd.segment_plane(distance_threshold=0.01, ransac_n=5, num_iterations=1000)
-            a, b, c, d = plane_model
-
-            camera_poses = cams2world  
-            heights = []
-            
-            for i, pose in enumerate(camera_poses):
-                if i == 0:
-                    camera_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=[0, 0, 0])
-                else:
-                    camera_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
-                camera_frame.transform(pose)
-                # camera_frames.append(camera_frame)
-                camera_position = pose[:3, 3]
-                x, y, z = camera_position
-
-                # Calcola l'altezza rispetto al pavimento
+            if opt_process=="Mobile-robot":
                 height = abs(a * x + b * y + c * z + d) / np.sqrt(a**2 + b**2 + c**2)
                 heights.append(height)
-                print(f"Height of the camera {i} w.r.t. the ground: {height}")
+                # print(f"Height of the camera {i} w.r.t. the ground: {height}")
+
+        if opt_process=="Mobile-robot" and scale_factor is not None:
+            height_groups = {}
+            for i, height in enumerate(heights):
+                idx = i // int(len(heights)/len(h2e_list))
+                if idx not in height_groups:
+                    height_groups[idx] = []
+
+                height_groups[idx].append(height)
+            
+            mean_heights = {idx: sum(heights)/len(heights) for idx, heights in height_groups.items()}
+            # print(f"Mean height of the cameras w.r.t. the ground: {mean_heights}")
+            for i, h2e in enumerate(h2e_list):
+                h2e[2, 3] = mean_heights[i]
+                
 
     else:
         meshes = []
@@ -209,10 +197,13 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
     if not silent:
         print('(exporting 3D scene to', outfile, ')')
     scene.export(file_obj=outfile)
+    if scale_factor is not None:
+        for i in range(len(h2e_list)):
+            print(f"Estimated H2E calibration matrix of camera {i+1}: {h2e_list[i]}")
     return outfile
 
 
-def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_pointcloud=False, mask_sky=False, mask_floor=False, 
+def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_pointcloud=False, mask_sky=False, mask_floor=False, calibration_process="Mobile-robot",
                             clean_depth=False, transparent_cams=False, TSDF_thresh=0):
     """
     extract 3D_model (glb file) from a reconstructed scene
@@ -233,20 +224,23 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
     quat_X = scene.get_quat_X()
     trans_X = scene.get_trans_X()
 
-    ccam2pcam = scene.get_relative_poses()
-    
+    h2e_list = []
     if scale_factor is not None:
+        
         print(f"Estimated scale factor: {scale_factor}")
         print(f"Estimated quaternion X: {quat_X}")
-        print(f"Estimated scaled translation X: {scale_factor*trans_X}")
+        print(f"Estimated translation X: {trans_X}")
+        print(f"Estimated scaled translation X: {[scale_factor[i]*trans_X[i] for i in range(len(scale_factor))]}")
+        for i in range(len(scale_factor)):
+            scale_factor[i] = abs(scale_factor[i])
+            quat_np = quat_X[i].detach().cpu().numpy()  # Convert PyTorch tensor to NumPy
+            rotation = Rotation.from_quat(quat_np)  # Create a Rotation object
+            h2e = np.eye(4)
+            h2e[:3, :3] = rotation.as_matrix()  # Now as_matrix() will work
 
-        quat_np = quat_X.detach().cpu().numpy()  # Convert PyTorch tensor to NumPy
-        rotation = Rotation.from_quat(quat_np)  # Create a Rotation object
-        h2e = np.eye(4)
-        h2e[:3, :3] = rotation.as_matrix()  # Now as_matrix() will work
-
-        h2e[:3, 3] = scale_factor.detach().cpu().numpy() * trans_X.detach().cpu().numpy()
-        print(f"Estimated H2E calibration matrix: {h2e}")
+            h2e[:3, 3] = scale_factor[i].detach().cpu().numpy() * trans_X[i].detach().cpu().numpy()
+            h2e_list.append(h2e)
+            # print(f"Estimated H2E calibration matrix of camera {i+1}: {h2e}")
 
     relative_transformations = []
 
@@ -255,21 +249,6 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
         T_current = cams2world[i]                       # Current transformation
         T_rel = T_prev_inv @ T_current                  # Relative transformation
         relative_transformations.append(T_rel)
-
-    # Save each relative transformation as a YAML file in OpenCV format
-    # for i, T_rel in enumerate(relative_transformations):
-    #     # Convert PyTorch tensor to NumPy array
-    #     T_rel_np = T_rel.numpy().astype(np.float64)  # OpenCV YAML format expects double precision (float64)
-
-    #     # Define the output file name
-    #     filename = f"relative_cam_pose_{i}.yaml"
-
-    #     # Open a cv2.FileStorage for writing in YAML format
-    #     fs = cv2.FileStorage(filename, cv2.FILE_STORAGE_WRITE)
-    #     fs.write("matrix", T_rel_np)
-    #     fs.release()
-
-    #     print(f"Saved relative transformation to {filename}")
 
     # Convert list to a tensor for easier manipulation if desired
     relative_transformations = torch.stack(relative_transformations)
@@ -283,25 +262,27 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
     msk = to_numpy([c > min_conf_thr for c in confs])
     
     all_msk_obj = []
-    for conf_object in confs_object:
-        valid_conf_object = [c for c in conf_object if c is not None]
+    if confs_object is not None:
+        for conf_object in confs_object:
+            valid_conf_object = [c for c in conf_object if c is not None]
 
-        # Now apply the comparison to the valid conf_object elements
-        msk_obj = to_numpy([c > min_conf_thr for c in valid_conf_object])
-        all_msk_obj.append(msk_obj)
+            # Now apply the comparison to the valid conf_object elements
+            msk_obj = to_numpy([c > min_conf_thr for c in valid_conf_object])
+            all_msk_obj.append(msk_obj)
 
+    ccam2pcam = scene.get_relative_poses()
     if scale_factor is not None:
         cams2world = ccam2pcam
     else:
         cams2world = cams2world
 
     return _convert_scene_output_to_glb(outfile, rgbimg, pts3d, pts3d_object, msk, all_msk_obj, focals, cams2world, cam_size, as_pointcloud=as_pointcloud,
-                                        transparent_cams=transparent_cams, silent=silent, mask_floor=mask_floor)
+                                        transparent_cams=transparent_cams, silent=silent, mask_floor=mask_floor, h2e_list=h2e_list, opt_process=calibration_process, scale_factor=scale_factor)
 
 
 
 def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, config, 
-                            current_scene_state, flattened_filelist, opt_process, camera_num, intrinsic_params, dist_coeffs, mask_list, robot_poses, optim_level, lr1, niter1, as_pointcloud, mask_sky, 
+                            current_scene_state, flattened_filelist, opt_process, camera_num, intrinsic_params, dist_coeffs, mask_list, robot_poses, calibration_process, lr1, niter1, as_pointcloud, mask_sky, 
                             mask_floor, clean_depth, transparent_cams, scenegraph_type, winsize,
                             win_cyclic, **kw):
     """
@@ -347,7 +328,7 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
     scene = sparse_global_alignment(flattened_filelist, pairs, cache_dir,
                                     model, opt_process, camera_num, flattened_msks, intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs, 
                                     robot_poses=robot_poses, lr1=lr1, niter1=niter1, device=device,
-                                    opt_depth=optim_level, shared_intrinsics=config['shared_intrinsics'],
+                                    opt_depth=True, shared_intrinsics=config['shared_intrinsics'],
                                     matching_conf_thr=config['matching_conf_thr'], **kw)
 
     if current_scene_state is not None and \
@@ -358,7 +339,7 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
         outfile_name = tempfile.mktemp(suffix='_scene.glb', dir=outdir)
 
     scene_state = SparseGAState(scene, gradio_delete_cache, cache_dir, outfile_name)
-    outfile = get_3D_model_from_scene(silent, scene_state, config['cam_size'], config['min_conf_thr'], as_pointcloud, mask_sky, mask_floor, 
+    outfile = get_3D_model_from_scene(silent, scene_state, config['cam_size'], config['min_conf_thr'], as_pointcloud, mask_sky, mask_floor, calibration_process,
                                       clean_depth, transparent_cams, config['TSDF_thresh'])
     
     images = [cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in flattened_filelist]
@@ -408,12 +389,12 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
         else:
             return gradio.Blocks(css=css, title="MASt3R-HEC Demo")  # for compatibility with older versions
 
-    def process_images(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, masks, robot_pose, optim_level, lr1, niter1,
+    def process_images(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, masks, robot_pose, calibration_process, lr1, niter1,
                    as_pointcloud, mask_sky, mask_floor, clean_depth, transparent_cams, scenegraph_type,
                    winsize, win_cyclic):
         if isinstance(input_images, list) and all(isinstance(img, str) for img in input_images):
             # Single list of images
-            return recon_fun(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, masks, robot_pose, optim_level,
+            return recon_fun(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, masks, robot_pose, calibration_process, 
                             lr1, niter1, as_pointcloud, mask_sky, mask_floor, clean_depth, transparent_cams, scenegraph_type,
                             winsize, win_cyclic)
         
@@ -457,7 +438,8 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                         selected_images = image_list[index]
                         intrinsic_params = intrinsic_params_vec[index] if intrinsic_params_vec else None
                         dist_coeff = [dist_coeffs[index]] if dist_coeffs else None
-                        robot_pose = robot_poses[index] if robot_poses else None
+                        # robot_pose = robot_poses[index] if robot_poses else None
+                        robot_pose = robot_poses if robot_poses else None
                         masks = mask_list[index] if mask_list else None
                         formatted_list = "\n".join(selected_images) if isinstance(selected_images, list) else "Processing all image lists."
                         selected_images_flat = selected_images
@@ -504,9 +486,11 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                         niter1 = gradio.Number(value=500, precision=0, minimum=0, maximum=10_000,
                                                label="num_iterations", info="For coarse alignment!")
                         
-                        optim_level = gradio.Dropdown(["coarse", "refine", "refine+depth"],
-                                                      value='refine+depth', label="OptLevel",
-                                                      info="Optimization level")
+                        if robot_poses is not None:
+                            calibration_process = gradio.Dropdown(["Mobile-robot", "Robot Arm"],
+                                                          value='Mobile-robot', label="optimization",
+                                                          info="Optimization process",
+                                                          interactive=True)
                         
                     with gradio.Row():
                         scenegraph_type = gradio.Dropdown([("complete: all possible image pairs", "complete"),
@@ -546,16 +530,16 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                               inputs=[inputfiles, win_cyclic, scenegraph_type],
                               outputs=[win_col, winsize, win_cyclic])
 
-            
-
             as_pointcloud.change(fn=model_from_scene_fun,
                                  inputs=[scene, as_pointcloud, mask_sky, mask_floor,
                                          clean_depth, transparent_cams],
                                  outputs=outmodel)
+            
             mask_sky.change(fn=model_from_scene_fun,
                             inputs=[scene, as_pointcloud, mask_sky,mask_floor,
                                     clean_depth, transparent_cams],
                             outputs=outmodel)
+            
             mask_floor.change(fn=model_from_scene_fun,
                                inputs=[scene, as_pointcloud, mask_sky, mask_floor,
                                        clean_depth, transparent_cams],
@@ -572,7 +556,7 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
 
             run_btn.click(
                 fn=process_images,
-                inputs=[scene, inputfiles, opt_process_state, camera_num, intrinsic_state, dist_coeff_state, masks_state, robot_pose_state, optim_level, lr1, niter1, as_pointcloud, mask_sky, mask_floor,
+                inputs=[scene, inputfiles, opt_process_state, camera_num, intrinsic_state, dist_coeff_state, masks_state, robot_pose_state, calibration_process, lr1, niter1, as_pointcloud, mask_sky, mask_floor,
                         clean_depth, transparent_cams, scenegraph_type, winsize, win_cyclic],
                 outputs=[scene, outmodel, outgallery]
             )

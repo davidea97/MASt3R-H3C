@@ -80,7 +80,8 @@ class SparseGA():
         ccam2pcam = [cam2w_0_inv @ cam2w_pose for cam2w_pose in self.cam2w]
         if self.scale_factor is not None:
             for i in range(len(ccam2pcam)):
-                ccam2pcam[i][:3, 3] *= self.scale_factor
+                scale_idx = i // (len(ccam2pcam)//len(self.scale_factor))
+                ccam2pcam[i][:3, 3] *= abs(self.scale_factor[scale_idx])
         return ccam2pcam
     
     def get_scale_factor(self):
@@ -103,7 +104,10 @@ class SparseGA():
         base_focals = []
         anchors = {}
         all_masks_bool = []
-        H, W = masks[0].shape
+        # H, W = masks[0].shape
+        if isinstance(masks, list) and all(elem is None for elem in masks):
+            masks = None
+
         all_conf_object = None
         if masks is not None:
             all_conf_object = [[None for _ in range(len(self.canonical_paths))] for _ in range(1)]
@@ -148,8 +152,10 @@ class SparseGA():
                     confs = clean_pointcloud(confs, self.intrinsics, inv(self.cam2w), depthmaps, pts3d)
             else:
                 # Extract 3D points and 3D object points with respect to the first camera reference frame
+                scale_factor_list = [self.scale_factor[i // int(len(base_focals)/len(self.scale_factor))] for i in range(len(base_focals))]
+
                 pts3d, pts3d_object, depthmaps, depthmaps_obj  = make_pts3d_mask(anchors, self.intrinsics, self.get_relative_poses(), [
-                                            d.ravel() for d in self.depthmaps], masks=masks, base_focals=base_focals, ret_depth=True, scale_factor=self.scale_factor)
+                                            d.ravel() for d in self.depthmaps], masks=masks, base_focals=base_focals, ret_depth=True, scale_factor=scale_factor_list)
 
                 clean_depth = False
                 if clean_depth:
@@ -244,16 +250,7 @@ def sparse_global_alignment(imgs, pairs_in, cache_path, model, opt_process=None,
     imgs, res_fine, scale_factor, trans_X, quat_X = sparse_scene_optimizer(
         imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d, preds_21, canonical_paths, mst,
         camera_num=camera_num, intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs_cam, robot_poses=robot_poses, shared_intrinsics=shared_intrinsics, cache_path=cache_path, device=device, dtype=dtype, **kw)
-    # else:
-    #     if robot_poses is None:
-    # imgs, res_coarse, res_fine = sparse_scene_optimizer_known_calib(
-    #     imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d, preds_21, canonical_paths, mst,
-    #     dist_coeffs_cam=dist_coeffs_cam, shared_intrinsics=shared_intrinsics, cache_path=cache_path, device=device, dtype=dtype, **kw)
-    #     else:
-    #         imgs, res_fine, scale_factor, trans_X, quat_X = sparse_scene_optimizer_with_robot_motion(
-    #             imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d, preds_21, canonical_paths, mst,
-    #             dist_coeffs_cam=dist_coeffs_cam, robot_poses=robot_poses, shared_intrinsics=shared_intrinsics, cache_path=cache_path, device=device, dtype=dtype, **kw)
-    
+
     return SparseGA(imgs, masks, pairs_in, res_fine, anchors, canonical_paths, scale_factor, trans_X, quat_X)
 
 
@@ -279,15 +276,11 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
 
     # Initialization of hand-eye calibration parameters
     if robot_poses is not None:
-        # Initialize for each camera
-        quat_X = []
-        trans_X = []
-        scale_factors = []
         
-        for _ in range(camera_num):  # Assuming `cams` is a list of camera objects
-            quat_X.append(torch.tensor([1.0, 0.0, 0.0, 0.0]))  # Identity quaternion for each camera
-            trans_X.append(torch.tensor([0.0, 0.0, 0.0]))  # Zero translation for each camera
-            scale_factors.append(torch.tensor(1.0))  # Scale factor for each camera
+        quat_X = [nn.Parameter(torch.tensor([1.0, 0.0, 0.0, 0.0], device=device, dtype=dtype)) for _ in range(camera_num)]
+        trans_X = [nn.Parameter(torch.tensor([0.0, 0.0, 0.0], device=device, dtype=dtype)) for _ in range(camera_num)]
+        scale_factor = [nn.Parameter(torch.tensor(1.0, device=device, dtype=dtype)) for _ in range(camera_num)]
+
     else:
         quat_X = None
         trans_X = None
@@ -674,69 +667,88 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
         """
         Loss function exploiting robot kinematics with quaternion rotation representation.
         """
+        # robot_poses_flattened = [pose for sublist in robot_poses for pose in sublist]
         loss = 0.0
-
-        # Normalize quaternion
-        quat_X = quat_X / quat_X.norm()
-        X_rot = quaternion_to_matrix(quat_X)
-
+        X_list = [None] * len(scale_factor)
         # Ensure tensors are on the correct device and dtype
         device = w2cam[0].device
         dtype = w2cam[0].dtype  # Use the same dtype as w2cam tensors
-        trans_X = trans_X.to(device).to(dtype)
-        scale_factor = scale_factor.to(device).to(dtype)
-        scale_factor = torch.abs(scale_factor)
-        quat_X = quat_X.to(device).to(dtype)
-        X_rot = X_rot.to(device).to(dtype)
+    
+        for i in range(len(scale_factor)):
+            # Normalize quaternion
+            # quat_X[i] = quat_X[i] / quat_X[i].norm()
+            X_rot = quaternion_to_matrix(quat_X[i])
 
-        # Construct transformation matrix X
-        X = torch.cat([torch.cat([X_rot, trans_X.view(3, 1)], dim=1), 
-                    torch.tensor([[0, 0, 0, 1]], device=device, dtype=dtype)], dim=0)
+            # trans_X[i] = trans_X[i].to(device).to(dtype)
+            # scale_factor[i] = scale_factor[i].to(device).to(dtype)
+            # scale_factor[i] = torch.abs(scale_factor[i])
+            # quat_X[i] = quat_X[i].to(device).to(dtype)
+            # X_rot = X_rot.to(device).to(dtype)
+
+            # Construct transformation matrix X
+            X = torch.cat([torch.cat([X_rot, trans_X[i].view(3, 1)], dim=1), 
+                        torch.tensor([[0, 0, 0, 1]], device=device, dtype=dtype)], dim=0)
+            X_list[i] = X
+
 
         # Compute the rotation magnitude
         rotation_magnitude_list = []
-        for i in range(1, len(w2cam)):
-            A = robot_poses[i - 1]
-            angle_axis = matrix_to_axis_angle(A[:3, :3])
-            rotation_magnitude = torch.norm(angle_axis, dim=0)
-            rotation_magnitude_list.append(rotation_magnitude)
+        wcam_reshaped = reshape_list(w2cam, camera_num)
+        A_list = []
+        B_List = []
+        for cam_idx in range(camera_num):
+            A_cam = []
+            B_cam = []
+            for i in range(1, len(wcam_reshaped[cam_idx])):
+                A = robot_poses[i - 1]
+                B = wcam_reshaped[cam_idx][i - 1] @ torch.linalg.inv(wcam_reshaped[cam_idx][i]) 
+                A_cam.append(A)
+                B_cam.append(B)
+                angle_axis = matrix_to_axis_angle(A[:3, :3])
+                rotation_magnitude = torch.norm(angle_axis, dim=0)
+                rotation_magnitude_list.append(rotation_magnitude)
+            A_list.append(A_cam)
+            B_List.append(B_cam)
         max_val = max(rotation_magnitude_list)
         min_val = min(rotation_magnitude_list)
         rotation_magnitude_list = [(val - min_val) / (max_val - min_val) for val in rotation_magnitude_list]
         rotation_magnitude_list = [val**2 for val in rotation_magnitude_list]
-        for i in range(1, len(w2cam)):
-            # Compute relative pose for robot and camera
-            A = robot_poses[i - 1]
-            # B = R_z@(w2cam[i - 1]) @ torch.linalg.inv(w2cam[i]) @ R_z
-            B = w2cam[i - 1] @ torch.linalg.inv(w2cam[i]) 
+        for cam_idx in range(camera_num):
+            for i in range(1, len(wcam_reshaped[cam_idx])):
+                # Compute relative pose for robot and camera
+                # A = robot_poses[i - 1]
+                # B = R_z@(w2cam[i - 1]) @ torch.linalg.inv(w2cam[i]) @ R_z
+                A = A_list[cam_idx][i - 1]
+                B = B_List[cam_idx][i - 1]
+                
+                # Ensure all tensors are on the same device
+                A = A.to(device).to(dtype)
+                B = B.to(device).to(dtype)
+                B_rotated = B.clone()
+                B_rotated[:3, :3] =  B_rotated[:3, :3]
+                # Compute chain transformations
+                chain1 = A
+                # idx =  i // len(w2cam)
+                chain2 = X_list[cam_idx] @ B_rotated @ torch.linalg.inv(X_list[cam_idx])
             
-            # Ensure all tensors are on the same device
-            A = A.to(device).to(dtype)
-            B = B.to(device).to(dtype)
-            B_rotated = B.clone()
-            B_rotated[:3, :3] =  B_rotated[:3, :3]
-            # Compute chain transformations
-            chain1 = A
-            chain2 = X @ B_rotated @ torch.linalg.inv(X)
-        
-            # Scale the translation part of chain2
-            chain2 = chain2.clone()
-            chain2[:3, 3] *= scale_factor
-            
-            angle_axis_camera = matrix_to_axis_angle(chain2[:3, :3])
-            rotation_magnitude_camera = torch.norm(angle_axis_camera, dim=0)
+                # Scale the translation part of chain2
+                chain2 = chain2.clone()
+                chain2[:3, 3] *= torch.abs(scale_factor[cam_idx])
+                
+                angle_axis_camera = matrix_to_axis_angle(chain2[:3, :3])
+                # rotation_magnitude_camera = torch.norm(angle_axis_camera, dim=0)
 
-            # Compute rotation loss
-            chain1_quat = matrix_to_quaternion(chain1[:3, :3])
-            chain2_quat = matrix_to_quaternion(chain2[:3, :3])
-            rotation_magnitude = rotation_magnitude_list[i - 1]
-            rotation_loss = rotation_magnitude * torch.nn.functional.mse_loss(chain1_quat, chain2_quat)
+                # Compute rotation loss
+                chain1_quat = matrix_to_quaternion(chain1[:3, :3])
+                chain2_quat = matrix_to_quaternion(chain2[:3, :3])
+                rotation_magnitude = rotation_magnitude_list[i - 1]
+                rotation_loss = rotation_magnitude * torch.nn.functional.mse_loss(chain1_quat, chain2_quat)
 
-            # Compute translation loss
-            translation_loss = rotation_magnitude * torch.nn.functional.mse_loss(chain1[:3, 3], chain2[:3, 3])
-            # print(f"Rotation loss {rotation_loss} - Translation loss {translation_loss}")
-            # Combine losses
-            loss += rotation_loss + translation_loss
+                # Compute translation loss
+                translation_loss = rotation_magnitude * torch.nn.functional.mse_loss(chain1[:3, 3], chain2[:3, 3])
+                # print(f"Rotation loss {rotation_loss} - Translation loss {translation_loss}")
+                # Combine losses
+                loss += rotation_loss + translation_loss
 
         return loss
     
@@ -754,8 +766,22 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
         Unified optimization loop integrating 3D loss, 2D reprojection loss, and calibration loss.
         """
         # Create separate optimizers for different parameter sets
+        # print("Quats: ", quats)
+        # print("Trans: ", trans)
+        # print("Flattened log sizes: ", flattened_log_sizes)
         camera_params = quats + trans + flattened_log_sizes #+ core_depth
-        calibration_params = [scale_factor, quat_X, trans_X]
+        # print("Scale factor: ", scale_factor)
+        # print("Quat X: ", quat_X)
+        # print("Trans X: ", trans_X)
+        # calibration_params = [scale_factor, quat_X, trans_X]
+        calibration_params = scale_factor + quat_X + trans_X
+        
+        # calibration_params = [param for sublist in calibration_params for param in sublist]
+        # print("Camera Params:", [p.shape for p in camera_params if p.requires_grad])
+        # print("Calibration Params:", [p.shape for p in calibration_params if p.requires_grad])
+
+        # for param in calibration_params:
+        #     print(f"Param shape: {param.shape}, requires_grad: {param.requires_grad}")
 
         optimizer_camera = torch.optim.Adam(camera_params, lr=1, weight_decay=0, betas=(0.9, 0.9))
         optimizer_calibration = torch.optim.Adam(calibration_params, lr=1, weight_decay=0, betas=(0.9, 0.9))
@@ -766,7 +792,7 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
             for iter in range(niter or 1):
                 # Compute camera poses and points 
                 _, (w2cam, cam2w), depthmaps = make_K_cam_depth(K_fixed_tensor, flattened_pps, trans, quats, flattened_log_sizes, flattened_core_depth)
-                pts3d = make_pts3d(anchors, K_fixed, cam2w, depthmaps, base_focals=base_focals)
+                pts3d = make_pts3d(anchors, K_fixed_tensor, cam2w, depthmaps, base_focals=base_focals)
                 if niter == 0:
                     break
 
@@ -792,14 +818,13 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                 optimizer_calibration.zero_grad()
 
                 # Compute individual losses
-                reprojection_loss = loss_2d_func(K_fixed, dist_coeffs_cam, w2cam, pts3d, pix_loss) + loss_dust3r_w * loss_dust3r(cam2w, pts3d, lossd)
+                reprojection_loss = loss_2d_func(K_fixed_tensor, distortion_tensor, w2cam, pts3d, pix_loss) + loss_dust3r_w * loss_dust3r(cam2w, pts3d, lossd)
                 calib_loss = calibration_loss_func(w2cam, robot_poses, scale_factor, quat_X, trans_X)
-                loss_3d = loss_3d_func(K_fixed, w2cam, pts3d, pix_loss)
+                loss_3d = loss_3d_func(K_fixed_tensor, w2cam, pts3d, pix_loss)
 
                 # Weighted total loss
                 total_loss = (weight_2d * reprojection_loss +
                             weight_calib * calib_loss + weight_3d * loss_3d)
-
 
                 # print(f"Reprojection Loss: {reprojection_loss:.6f}, Calibration Loss: {calib_loss:.6f}, 3D Loss: {loss_3d:.6f}")
 
@@ -811,7 +836,9 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                 # Normalize quaternions
                 for i in range(len(imgs)):
                     quats[i].data[:] /= quats[i].data.norm()
-                quat_X.data = quat_X.data / quat_X.data.norm()
+                for i in range(len(scale_factor)):
+                    quat_X[i].data = quat_X[i].data / quat_X[i].data.norm()
+                # quat_X.data = quat_X.data / quat_X.data.norm()
 
                 # Check for NaN or other optimization issues
                 loss = float(total_loss)
@@ -825,7 +852,7 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
         if niter:
             print(f'>> final loss = {loss}')
         return dict(
-            intrinsics=K_fixed,
+            intrinsics=K_fixed_tensor,
             cam2w=cam2w.detach(),
             depthmaps=[d.detach() for d in depthmaps],
             pts3d=[p.detach() for p in pts3d]
@@ -946,7 +973,6 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                     flattened_log_focals[i].requires_grad_(True)
                     flattened_core_depth[i].requires_grad_(True)
 
-            
             # refinement with 2d reproj
             if intrinsic_params is not None:
                 # res_fine = optimize_loop(loss_2d, lr_base=lr2, niter=niter2, pix_loss=loss2)
@@ -982,20 +1008,19 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
             # at start, don't optimize 3d points
             for i, img in enumerate(imgs):
                 trainable = not (init[img].get('freeze'))
-                pps[i] = pps[i].detach()
-                log_focals[i] = log_focals[i].detach()
+                flattened_pps[i] = flattened_pps[i].detach()
+                flattened_log_focals[i] = flattened_log_focals[i].detach()
 
                 quats[i].requires_grad_(trainable)
                 trans[i].requires_grad_(trainable)
-                log_sizes[i].requires_grad_(trainable)
+                flattened_log_sizes[i].requires_grad_(trainable)
                 
-
-            quat_X.requires_grad_(True)
-            trans_X.requires_grad_(True)
-            scale_factor.requires_grad_(True)
+            for i in range(camera_num):
+                quat_X[i].requires_grad_(True)
+                trans_X[i].requires_grad_(True)
+                scale_factor[i].requires_grad_(True)
 
             res_fine = None
-            
             res_fine = optimize_loop_with_calibration_and_2d(
                 lambda _, w2cam, pts3d, pix_loss: loss_3d(K_fixed_tensor, w2cam, pts3d, pix_loss),
                 lambda K_fixed_tensor, distortion_tensor, w2cam, pts3d, pix_loss: loss_2d(K_fixed_tensor, distortion_tensor, w2cam, pts3d, pix_loss),
@@ -1006,11 +1031,12 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                 dynamic_weights=True
             )
 
-            scale_factor = abs(scale_factor)
-            print("Scale factor: ", scale_factor)
-            print("Quat X: ", quat_X)
-            print("Tras X: ", trans_X)
-            print("Scaled translation: ", scale_factor*trans_X)
+            # scale_factor = abs(scale_factor)
+            # print("Scale factor: ", scale_factor)
+            # print("Quat X: ", quat_X)
+            # print("Tras X: ", trans_X)
+            # for i in range(camera_num):
+            #     print(f"Scaled translation {i+1}: {scale_factor[i]*trans_X[i]}")
 
             if shared_intrinsics:
                 print('Final focal (shared) = ', to_numpy(K_fixed[0, 0, 0]).round(2))
@@ -1065,7 +1091,7 @@ def make_pts3d(anchors, K, cam2w, depthmaps, base_focals=None, ret_depth=False):
     return all_pts3d
 
 
-def make_pts3d_mask(anchors, K, cam2w, depthmaps, masks=None, base_focals=None, ret_depth=False, scale_factor=1.0):
+def make_pts3d_mask(anchors, K, cam2w, depthmaps, masks=None, base_focals=None, ret_depth=False, scale_factor=None):
     """
     Parameters:
     - anchors: dictionary containing pixel coordinates and other metadata for each image
@@ -1106,8 +1132,10 @@ def make_pts3d_mask(anchors, K, cam2w, depthmaps, masks=None, base_focals=None, 
         mask_flat = mask.flatten()
         # From depthmaps to 3D points
         if base_focals is not None:
-
-            offsets = (1 + (offsets - 1) * (base_focals[img] / focals[img]))*scale_factor
+            if scale_factor is not None:
+                offsets = (1 + (offsets - 1) * (base_focals[img] / focals[img]))*scale_factor[img]
+            else:
+                offsets = 1 + (offsets - 1) * (base_focals[img] / focals[img])
         # Ensure the mask is flattened to match 3D points
         
         # Project all points into 3D
@@ -1374,87 +1402,6 @@ def prepare_canonical_data(imgs, tmp_pairs, subsample, order_imgs=False, min_con
         canonical_views[img] = (pp, (H, W), focal.view(1), core_depth, pixels, idxs, offsets)
 
     return tmp_pairs, pairwise_scores, canonical_views, canonical_paths, preds_21
-
-# @torch.no_grad()
-# def prepare_canonical_data_knwon_calib(imgs, tmp_pairs, subsample, order_imgs=False, min_conf_thr=0,
-#                            cache_path=None, device='cuda', intrinsic_params=None, **kw):
-#     canonical_views = {}
-#     pairwise_scores = torch.zeros((len(imgs), len(imgs)), device=device)
-#     canonical_paths = []
-#     preds_21 = {}
-#     for img in tqdm(imgs):
-#         if cache_path:
-#             cache = os.path.join(cache_path, 'canon_views', hash_md5(img) + f'_{subsample=}_{kw=}.pth')
-#             canonical_paths.append(cache)
-#         try:
-#             (canon, canon2, cconf), focal = torch.load(cache, map_location=device)
-#         except IOError:
-#             # cache does not exist yet, we create it!
-#             canon = focal = None
-        
-#         # collect all pred1
-#         n_pairs = sum((img in pair) for pair in tmp_pairs)
-
-#         ptmaps11 = None
-#         pixels = {}
-#         n = 0
-#         for (img1, img2), ((path1, path2), path_corres) in tmp_pairs.items():
-#             score = None
-#             if img == img1:
-#                 X, C, X2, C2 = torch.load(path1, map_location=device)
-#                 score, (xy1, xy2, confs) = load_corres(path_corres, device, min_conf_thr)
-#                 pixels[img2] = xy1, confs
-#                 if img not in preds_21:
-#                     preds_21[img] = {}
-#                 # Subsample preds_21
-#                 preds_21[img][img2] = X2[::subsample, ::subsample].reshape(-1, 3), C2[::subsample, ::subsample].ravel()
-
-#             if img == img2:
-#                 X, C, X2, C2 = torch.load(path2, map_location=device)
-#                 score, (xy1, xy2, confs) = load_corres(path_corres, device, min_conf_thr)
-#                 pixels[img1] = xy2, confs
-#                 if img not in preds_21:
-#                     preds_21[img] = {}
-#                 preds_21[img][img1] = X2[::subsample, ::subsample].reshape(-1, 3), C2[::subsample, ::subsample].ravel()
-
-#             if score is not None:
-#                 i, j = imgs.index(img1), imgs.index(img2)
-#                 # score = score[0]
-#                 # score = np.log1p(score[2])
-#                 score = score[2]
-#                 pairwise_scores[i, j] = score
-#                 pairwise_scores[j, i] = score
-
-#                 if canon is not None:
-#                     continue
-#                 if ptmaps11 is None:
-#                     H, W = C.shape
-#                     ptmaps11 = torch.empty((n_pairs, H, W, 3), device=device)
-#                     confs11 = torch.empty((n_pairs, H, W), device=device)
-
-#                 ptmaps11[n] = X
-#                 confs11[n] = C
-#                 n += 1
-#         if canon is None:
-#             canon, canon2, cconf = canonical_view(ptmaps11, confs11, subsample, **kw)
-#             del ptmaps11
-#             del confs11
-
-#         # compute focals
-#         #H, W = canon.shape[:2]
-#         focal = torch.tensor([intrinsic_params['focal']], device=device)
-#         pp = torch.tensor(intrinsic_params['pp'], device=device)
-
-#         if cache:
-#             torch.save(to_cpu(((canon, canon2, cconf), focal)), mkdir_for(cache))
-
-#         # extract depth offsets with correspondences
-#         core_depth = canon[subsample // 2::subsample, subsample // 2::subsample, 2]
-#         idxs, offsets = anchor_depth_offsets(canon2, pixels, subsample=subsample)
-#         canonical_views[img] = (pp, (H, W), focal.view(1), core_depth, pixels, idxs, offsets)
-
-#     return tmp_pairs, pairwise_scores, canonical_views, canonical_paths, preds_21
-
 
 def load_corres(path_corres, device, min_conf_thr):
     score, (xy1, xy2, confs) = torch.load(path_corres, map_location=device)

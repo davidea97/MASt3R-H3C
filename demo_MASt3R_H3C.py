@@ -35,7 +35,7 @@ if __name__ == '__main__':
     parser.add_argument('--input_folder', type=str, default="dust3r/croco/assets")
     parser.add_argument('--outdir', type=str, default="output")
     parser.add_argument('--config', type=str, default="config.yaml", help="Path to the configuration file")
-    parser.add_argument('--mask_floor', type=str2bool, default=True, help="True or False for floor mask generation")
+    parser.add_argument('--mask_floor', type=str2bool, default=False, help="True or False for floor mask generation")
     parser.add_argument('--subset_size', type=int, default=0, help="Number of images to use for the reconstruction")
     parser.add_argument('--use_intrinsics', type=str2bool, default=True, help="Use intrinsic parameters for the cameras")
     parser.add_argument('--calibrate_sensor', type=str2bool, default=True, help="Use robot motion to perform the calibration step")
@@ -59,6 +59,7 @@ if __name__ == '__main__':
     
     image_list, subfolders = generate_image_list(args.input_folder)
     camera_num = len(subfolders)
+
     robot_poses = [[] for _ in range(camera_num)]
     image_sublist = [[] for _ in range(camera_num)]
     if args.calibrate_sensor:
@@ -80,16 +81,23 @@ if __name__ == '__main__':
                 robot_poses[i].append(torch.tensor(matrix))
     else:
         robot_poses = None
+        
 
+    
     if args.subset_size > 0:
         for i in range(len(image_list)):
             image_sublist[i] = image_list[i][:args.subset_size]
         if robot_poses is not None:
             for i in range(len(robot_poses)):
                 robot_poses[i] = robot_poses[i][:args.subset_size-1]
+            # The robot poses are the same for each camera
+            final_robot_poses = robot_poses[0]
+        else:
+            final_robot_poses = None
     else:
         image_sublist = image_list
 
+    image_ext = None
     if args.mask_floor:
         mask_generator = MaskGenerator(config, image_sublist, subfolders)
         print("Generating masks...")
@@ -115,4 +123,4 @@ if __name__ == '__main__':
         cache_path = os.path.join(tmpdirname, chkpt_tag)
         os.makedirs(cache_path, exist_ok=True)
         main_demo(cache_path, model, config, args.device, server_name, args.server_port, image_sublist, mask_list, args.silent,
-                  camera_num, intrinsic_params_vec, dist_coeffs, robot_poses, share=args.share, gradio_delete_cache=args.gradio_delete_cache)
+                  camera_num, intrinsic_params_vec, dist_coeffs, final_robot_poses, share=args.share, gradio_delete_cache=args.gradio_delete_cache)
