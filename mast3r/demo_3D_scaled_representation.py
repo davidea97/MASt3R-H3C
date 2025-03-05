@@ -276,13 +276,32 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
     else:
         cams2world = cams2world
 
+    # num_cameras = 3  # Fixed cameras per timestep
+    # num_timesteps = len(cams2world) // num_cameras  # Compute number of timesteps
+
+    # for t in range(num_timesteps):
+    #     # Get world-to-camera transformations at time t
+    #     cam1_to_world = cams2world[t]       # Camera 1 at time t
+    #     cam2_to_world = cams2world[t + num_timesteps]  # Camera 2 at time t
+    #     cam3_to_world = cams2world[t + 2 * num_timesteps]  # Camera 3 at time t
+
+    #     # Compute relative transformations
+    #     cam1_to_world_inv = torch.linalg.inv(cam1_to_world)
+    #     cam2_to_cam1 = cam1_to_world_inv @ cam2_to_world
+    #     cam3_to_cam1 = cam1_to_world_inv @ cam3_to_world
+
+    #     # Print relative poses
+    #     print(f"Time Step {t}:")
+    #     print("Cam2 relative to Cam1:\n", cam2_to_cam1)
+    #     print("Cam3 relative to Cam1:\n", cam3_to_cam1)
+    #     print("=" * 50)
     return _convert_scene_output_to_glb(outfile, rgbimg, pts3d, pts3d_object, msk, all_msk_obj, focals, cams2world, cam_size, as_pointcloud=as_pointcloud,
                                         transparent_cams=transparent_cams, silent=silent, mask_floor=mask_floor, h2e_list=h2e_list, opt_process=calibration_process, scale_factor=scale_factor)
 
 
 
 def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, config, 
-                            current_scene_state, flattened_filelist, opt_process, camera_num, intrinsic_params, dist_coeffs, mask_list, robot_poses, calibration_process, lr1, niter1, as_pointcloud, mask_sky, 
+                            current_scene_state, flattened_filelist, opt_process, camera_num, intrinsic_params, dist_coeffs, mask_list, robot_poses, calibration_process, multiple_camera_opt, lr1, niter1, as_pointcloud, mask_sky, 
                             mask_floor, clean_depth, transparent_cams, scenegraph_type, winsize,
                             win_cyclic, **kw):
     """
@@ -327,7 +346,7 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
 
     scene = sparse_global_alignment(flattened_filelist, pairs, cache_dir,
                                     model, opt_process, camera_num, flattened_msks, intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs, 
-                                    robot_poses=robot_poses, lr1=lr1, niter1=niter1, device=device,
+                                    robot_poses=robot_poses, multiple_camera_opt=multiple_camera_opt, lr1=lr1, niter1=niter1, device=device,
                                     opt_depth=True, shared_intrinsics=config['shared_intrinsics'],
                                     matching_conf_thr=config['matching_conf_thr'], **kw)
 
@@ -389,12 +408,12 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
         else:
             return gradio.Blocks(css=css, title="MASt3R-HEC Demo")  # for compatibility with older versions
 
-    def process_images(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, masks, robot_pose, calibration_process, lr1, niter1,
+    def process_images(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, masks, robot_pose, calibration_process, multiple_camera_opt, lr1, niter1,
                    as_pointcloud, mask_sky, mask_floor, clean_depth, transparent_cams, scenegraph_type,
                    winsize, win_cyclic):
         if isinstance(input_images, list) and all(isinstance(img, str) for img in input_images):
             # Single list of images
-            return recon_fun(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, masks, robot_pose, calibration_process, 
+            return recon_fun(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, masks, robot_pose, calibration_process, multiple_camera_opt,
                             lr1, niter1, as_pointcloud, mask_sky, mask_floor, clean_depth, transparent_cams, scenegraph_type,
                             winsize, win_cyclic)
         
@@ -517,6 +536,7 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                 mask_floor = gradio.Checkbox(value=False, label="Mask floor")
                 clean_depth = gradio.Checkbox(value=True, label="Clean-up depthmaps")
                 transparent_cams = gradio.Checkbox(value=False, label="Transparent cameras")
+                multiple_camera_opt = gradio.Checkbox(value=False, label="Multiple camera optimization")
 
             outmodel = gradio.Model3D()
             outgallery = gradio.Gallery(label='rgb', columns=4, height="100%")
@@ -559,7 +579,7 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
 
             run_btn.click(
                 fn=process_images,
-                inputs=[scene, inputfiles, opt_process_state, camera_num, intrinsic_state, dist_coeff_state, masks_state, robot_pose_state, calibration_process, lr1, niter1, as_pointcloud, mask_sky, mask_floor,
+                inputs=[scene, inputfiles, opt_process_state, camera_num, intrinsic_state, dist_coeff_state, masks_state, robot_pose_state, calibration_process, multiple_camera_opt, lr1, niter1, as_pointcloud, mask_sky, mask_floor,
                         clean_depth, transparent_cams, scenegraph_type, winsize, win_cyclic],
                 outputs=[scene, outmodel, outgallery]
             )

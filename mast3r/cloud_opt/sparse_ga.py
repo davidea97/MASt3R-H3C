@@ -211,7 +211,7 @@ def convert_dust3r_pairs_naming(imgs, pairs_in):
     return pairs_in
 
 
-def sparse_global_alignment(imgs, pairs_in, cache_path, model, opt_process=None, camera_num=None, masks = None, intrinsic_params=None, dist_coeffs_cam=None, robot_poses=None, subsample=8, desc_conf='desc_conf',
+def sparse_global_alignment(imgs, pairs_in, cache_path, model, opt_process=None, camera_num=None, masks = None, intrinsic_params=None, dist_coeffs_cam=None, robot_poses=None, multiple_camera_opt=None, subsample=8, desc_conf='desc_conf',
                             device='cuda', dtype=torch.float32, shared_intrinsics=False, **kw):
     """ Sparse alignment with MASt3R
         imgs: list of image paths
@@ -249,14 +249,14 @@ def sparse_global_alignment(imgs, pairs_in, cache_path, model, opt_process=None,
     print("CAMERA NUM: ", camera_num)
     imgs, res_fine, scale_factor, trans_X, quat_X = sparse_scene_optimizer(
         imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d, preds_21, canonical_paths, mst,
-        camera_num=camera_num, intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs_cam, robot_poses=robot_poses, shared_intrinsics=shared_intrinsics, cache_path=cache_path, device=device, dtype=dtype, **kw)
+        camera_num=camera_num, intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs_cam, robot_poses=robot_poses, multiple_camera_opt=multiple_camera_opt, shared_intrinsics=shared_intrinsics, cache_path=cache_path, device=device, dtype=dtype, **kw)
 
     return SparseGA(imgs, masks, pairs_in, res_fine, anchors, canonical_paths, scale_factor, trans_X, quat_X)
 
 
 def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d,
                            preds_21, canonical_paths, mst, cache_path, camera_num=None, intrinsic_params=None, dist_coeffs_cam=None,
-                           robot_poses=None,
+                           robot_poses=None, multiple_camera_opt=None,
                            lr1=0.2, niter1=500, loss1=gamma_loss(1.1),
                            lr2=0.02, niter2=500, loss2=gamma_loss(0.4),
                            lossd=gamma_loss(1.1),
@@ -276,7 +276,6 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
 
     # Initialization of hand-eye calibration parameters
     if robot_poses is not None:
-        
         quat_X = [nn.Parameter(torch.tensor([1.0, 0.0, 0.0, 0.0], device=device, dtype=dtype)) for _ in range(camera_num)]
         trans_X = [nn.Parameter(torch.tensor([0.0, 0.0, 0.0], device=device, dtype=dtype)) for _ in range(camera_num)]
         scale_factor = [nn.Parameter(torch.tensor(1.0, device=device, dtype=dtype)) for _ in range(camera_num)]
@@ -286,6 +285,9 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
         trans_X = None
         scale_factor = None
 
+    # # If cameras are more than 1, we need to optimize their relative poses
+    quat_X_rel = [nn.Parameter(torch.tensor([1.0, 0.0, 0.0, 0.0], device=device, dtype=dtype)) for _ in range(camera_num) for _ in range(camera_num)]
+    trans_X_rel = [nn.Parameter(torch.tensor([0.0, 0.0, 0.0], device=device, dtype=dtype)) for _ in range(camera_num) for _ in range(camera_num)]
 
     # initialize
     ones = torch.ones((len(imgs), 1), device=device, dtype=dtype)
@@ -663,21 +665,19 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
 
         return loss / npix if npix != 0 else 0.
     
-    def calibration_loss(w2cam, robot_poses, scale_factor, quat_X, trans_X):
+    def calibration_loss(w2cam, robot_poses, scale_factor, quat_X, trans_X, quat_X_rel, trans_X_rel):
         """
         Loss function exploiting robot kinematics with quaternion rotation representation.
         """
-        # robot_poses_flattened = [pose for sublist in robot_poses for pose in sublist]
         loss = 0.0
         X_list = [None] * len(scale_factor)
         # Ensure tensors are on the correct device and dtype
         device = w2cam[0].device
-        dtype = w2cam[0].dtype  # Use the same dtype as w2cam tensors
-    
+        dtype = w2cam[0].dtype  
+
+        # Compute camera extrinsics    
         for i in range(len(scale_factor)):
             X_rot = quaternion_to_matrix(quat_X[i])
-
-            # Construct transformation matrix X
             X = torch.cat([torch.cat([X_rot, trans_X[i].view(3, 1)], dim=1), 
                         torch.tensor([[0, 0, 0, 1]], device=device, dtype=dtype)], dim=0)
             X_list[i] = X
@@ -686,41 +686,38 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
         # Compute the rotation magnitude
         rotation_magnitude_list = []
         wcam_reshaped = reshape_list(w2cam, camera_num)
-        A_list = []
-        B_List = []
+        A_List, B_List = [], []
+    
         for cam_idx in range(camera_num):
-            A_cam = []
-            B_cam = []
+            A_cam, B_cam = [], []
             for i in range(1, len(wcam_reshaped[cam_idx])):
                 A = robot_poses[i - 1]
                 B = wcam_reshaped[cam_idx][i - 1] @ torch.linalg.inv(wcam_reshaped[cam_idx][i]) 
                 A_cam.append(A)
                 B_cam.append(B)
                 angle_axis = matrix_to_axis_angle(A[:3, :3])
-                rotation_magnitude = torch.norm(angle_axis, dim=0)
-                rotation_magnitude_list.append(rotation_magnitude)
-            A_list.append(A_cam)
+                rotation_magnitude_list.append(torch.norm(angle_axis, dim=0))
+            A_List.append(A_cam)
             B_List.append(B_cam)
+
         max_val = max(rotation_magnitude_list)
         min_val = min(rotation_magnitude_list)
         rotation_magnitude_list = [(val - min_val) / (max_val - min_val) for val in rotation_magnitude_list]
         rotation_magnitude_list = [val**2 for val in rotation_magnitude_list]
+        
         for cam_idx in range(camera_num):
             for i in range(1, len(wcam_reshaped[cam_idx])):
-                A = A_list[cam_idx][i - 1]
+                A = A_List[cam_idx][i - 1]
                 B = B_List[cam_idx][i - 1]
                 
-                # Ensure all tensors are on the same device
                 A = A.to(device).to(dtype)
                 B = B.to(device).to(dtype)
                 B_rotated = B.clone()
-                B_rotated[:3, :3] =  B_rotated[:3, :3]
-                # Compute chain transformations
                 chain1 = A
                 chain2 = X_list[cam_idx] @ B_rotated @ torch.linalg.inv(X_list[cam_idx])
             
                 # Scale the translation part of chain2
-                chain2 = chain2.clone()
+                # chain2 = chain2.clone()
                 chain2[:3, 3] *= torch.abs(scale_factor[cam_idx])
 
                 # Compute rotation loss
@@ -735,6 +732,47 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                 # Combine losses
                 loss += rotation_loss + translation_loss
 
+
+        if multiple_camera_opt:
+            # Enforce Relative Pose Consistency Across Time
+            for t in range(1, len(wcam_reshaped[0])):  # Iterate over time steps
+
+                for cam_i in range(camera_num):
+                    for cam_j in range(cam_i + 1, camera_num):
+                        # Compute relative transformation T_{i,j}^{(t)}
+                        T_i_world = wcam_reshaped[cam_i][t]
+                        T_j_world = wcam_reshaped[cam_j][t]
+                        # X_ij_t = torch.linalg.inv(T_i_world) @ T_j_world  # Relative pose at time t
+                        X_rot_rel = quaternion_to_matrix(quat_X_rel[cam_i * camera_num + cam_j])
+                        X_rel = torch.cat([torch.cat([X_rot_rel, trans_X_rel[cam_i * camera_num + cam_j].view(3, 1)], dim=1), 
+                                    torch.tensor([[0, 0, 0, 1]], device=device, dtype=dtype)], dim=0)
+                        
+                        # Compute relative transformation T_{i,j}^{(t-1)}
+                        T_i_world_prev = wcam_reshaped[cam_i][t - 1]
+                        T_j_world_prev = wcam_reshaped[cam_j][t - 1]
+                        # X_ij_prev = torch.linalg.inv(T_i_world_prev) @ T_j_world_prev  # Relative pose at t-1
+                        B_i = torch.linalg.inv(T_i_world_prev) @ T_i_world
+                        B_j = torch.linalg.inv(T_j_world_prev) @ T_j_world
+                        
+                        chain1 = B_i @ X_rel
+                        chain2 = X_rel @ B_j
+                        # Compute difference in relative transformations
+                        rel_rot_t = chain1[:3, :3]
+                        rel_rot_prev = chain2[:3, :3]
+                        rel_trans_t = chain1[:3, 3]
+                        rel_trans_prev = chain2[:3, 3]
+
+                        # Convert rotation matrices to quaternions
+                        rel_quat_t = matrix_to_quaternion(rel_rot_t)
+                        rel_quat_prev = matrix_to_quaternion(rel_rot_prev)
+
+                        # Compute consistency loss
+                        rel_rotation_loss = torch.nn.functional.mse_loss(rel_quat_t, rel_quat_prev)
+                        rel_translation_loss = torch.nn.functional.mse_loss(rel_trans_t, rel_trans_prev)
+
+                        # Add to total loss
+                        loss += rel_rotation_loss + rel_translation_loss
+                    
         return loss
     
     def optimize_loop_with_calibration_and_2d(
@@ -752,7 +790,7 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
         """
         # Create separate optimizers for different parameter sets
         camera_params = quats + trans + flattened_log_sizes
-        calibration_params = scale_factor + quat_X + trans_X
+        calibration_params = scale_factor + quat_X + trans_X + quat_X_rel + trans_X_rel
 
         optimizer_camera = torch.optim.Adam(camera_params, lr=1, weight_decay=0, betas=(0.9, 0.9))
         optimizer_calibration = torch.optim.Adam(calibration_params, lr=1, weight_decay=0, betas=(0.9, 0.9))
@@ -790,7 +828,7 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
 
                 # Compute individual losses
                 reprojection_loss = loss_2d_func(K_fixed_tensor, distortion_tensor, w2cam, pts3d, pix_loss) + loss_dust3r_w * loss_dust3r(cam2w, pts3d, lossd)
-                calib_loss = calibration_loss_func(w2cam, robot_poses, scale_factor, quat_X, trans_X)
+                calib_loss = calibration_loss_func(w2cam, robot_poses, scale_factor, quat_X, trans_X, quat_X_rel, trans_X_rel)
                 loss_3d = loss_3d_func(K_fixed_tensor, w2cam, pts3d, pix_loss)
 
                 # Weighted total loss
@@ -987,6 +1025,9 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                 quat_X[i].requires_grad_(True)
                 trans_X[i].requires_grad_(True)
                 scale_factor[i].requires_grad_(True)
+                for j in range(camera_num):
+                    quat_X_rel[i][j].requires_grad_(True)
+                    trans_X_rel[i][j].requires_grad_(True)
 
             res_fine = None
             res_fine = optimize_loop_with_calibration_and_2d(
