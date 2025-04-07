@@ -79,7 +79,9 @@ class MaskGenerator:
                     h, w, _ = image_source.shape
                     boxes = boxes * torch.Tensor([w, h, w, h])
                     input_boxes = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy()
-
+                    if len(input_boxes>1):
+                        input_boxes = input_boxes[:1]
+                    print(f"Camera {i+1}: Image {idx}: len input_boxes: {len(input_boxes)}")
             for object_id, (label, box) in enumerate(zip(init_objects, input_boxes), start=1):
                 _, out_obj_ids, out_mask_logits = self.video_predictor.add_new_points_or_box(
                     inference_state=inference_state,

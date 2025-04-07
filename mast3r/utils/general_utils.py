@@ -2,6 +2,7 @@ import glob
 import os
 import numpy as np
 import yaml
+from scipy.spatial.transform import Rotation as R
 
 def generate_image_list(folder_path):
     """
@@ -115,3 +116,50 @@ def read_intrinsics(camera_folders, config, intrinsic_file="intrinsic_pars_file.
 def reshape_list(lst, N):
     k, m = divmod(len(lst), N)
     return [lst[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(N)]
+
+
+def rotation_matrix_to_rpy(R):
+    """
+    Convert a 3x3 rotation matrix to roll (X), pitch (Y), and yaw (Z) angles.
+    Assumes ZYX intrinsic rotation (yaw → pitch → roll).
+    Returns angles in degrees.
+    """
+    roll = np.arctan2(R[2,1], R[2,2])  # atan2(R32, R33)
+    pitch = np.arcsin(-R[2,0])         # asin(-R31)
+    yaw = np.arctan2(R[1,0], R[0,0])   # atan2(R21, R11)
+
+    return roll, pitch, yaw  # Convert to degrees
+
+def read_transformations(file_path):
+    """Reads a TXT file containing transformation data (tx, ty, tz, rx, ry, rz)."""
+    transformations = np.loadtxt(file_path, delimiter=",")
+    return transformations
+
+
+def compute_errors(gt, est, camera_num, camera_selected=0):
+    """
+    Computes translation and rotation errors between ground truth (gt) and estimated (est).
+    
+    - gt, est: Nx6 arrays where each row represents (tx, ty, tz, rx, ry, rz).
+    """
+    if camera_num>1:
+        # Compute translation error (Euclidean distance)
+        trans_error = np.linalg.norm(gt[:, :3] - est[:, :3], axis=1)
+
+        # Compute rotation error using angle-axis representation
+        rot_gt = R.from_rotvec(gt[:, 3:])  # Convert to rotation objects
+        rot_est = R.from_rotvec(est[:, 3:])
+    else:
+        # Compute translation error (Euclidean distance)
+        est = est[0]
+        trans_error = np.linalg.norm(gt[:3] - est[:3], axis=0)
+
+        # Compute rotation error using angle-axis representation
+        rot_gt = R.from_rotvec(gt[3:])  # Convert to rotation objects
+        rot_est = R.from_rotvec(est[3:])
+    
+    # Compute relative rotation (GT^-1 * EST)
+    rot_rel = rot_gt.inv() * rot_est  # Relative rotation
+    rot_error = rot_rel.magnitude()   # Extract the angle error in radians
+    
+    return trans_error, rot_error  # Convert rotation error to degrees

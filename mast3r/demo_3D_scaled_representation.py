@@ -19,7 +19,6 @@ import torch
 import cv2
 import open3d as o3d
 
-
 from mast3r.cloud_opt.sparse_ga import sparse_global_alignment
 from mast3r.cloud_opt.tsdf_optimizer import TSDFPostProcess
 
@@ -29,7 +28,7 @@ from dust3r.utils.image import load_single_masks, load_single_images
 from dust3r.utils.device import to_numpy
 from dust3r.viz import add_scene_cam, CAM_COLORS, OPENGL, pts3d_to_trimesh, cat_meshes
 from dust3r.demo import get_args_parser as dust3r_get_args_parser
-from mast3r.utils.general_utils import reshape_list
+from mast3r.utils.general_utils import rotation_matrix_to_rpy, compute_errors, read_transformations
 import matplotlib.pyplot as pl
 
 PROCESS_ALL_IMAGES = "Multi-Camera"
@@ -128,7 +127,13 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
 
         pct_updated = trimesh.PointCloud(valid_pts, colors=valid_col)
         scene.add_geometry(pct_updated)
-        
+
+        # SAVE PCL FILE
+        ply_outfile = os.path.join('pointcloud.ply')
+        pct_updated.export(ply_outfile)
+        if not silent:
+            print('(esportata pointcloud in', ply_outfile, ')')
+
         camera_poses = cams2world  
         camera_frames = []
         heights = []
@@ -138,7 +143,7 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
                 camera_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=[0, 0, 0])
             else:
                 camera_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
-            camera_frame.transform(pose)  
+            camera_frame.transform(pose)
             camera_frames.append(camera_frame)
             camera_position = pose[:3, 3]
             x, y, z = camera_position
@@ -182,24 +187,80 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
                       None if transparent_cams else imgs[i], focals[i],
                       imsize=imgs[i].shape[1::-1], screen_width=cam_size)
         
+        rob_axis = trimesh.creation.axis(origin_size=0.02, axis_length=0.5)
+        robot_centers = []
+       
+        
+        if len(h2e_list) > 0:
+            idx = i // int(len(cams2world)/len(h2e_list))
+            ee_to_rob = np.array([[9.99807842e-01, 9.69427142e-04, -1.95790426e-02, 5.55120952e-01],
+                                [9.77803362e-04, -9.99999434e-01, 4.18246983e-04, 9.85213614e-05],
+                                [-1.95786260e-02, -4.37311068e-04, -9.99808225e-01, 5.11640885e-01],
+                                [0., 0., 0., 1.]])
+            # ee_to_rob = np.array([[0.99925415, 0.03416702, -0.01799314, -0.06077267],
+            #                     [0.02872165, -0.96907261, -0.24509866, -0.04276322],
+            #                     [-0.02581095, 0.24439906, -0.96933116, 0.47765159],
+            #                     [0., 0., 0., 1.]])
+            rob_axis.apply_transform(pose_c2w@np.linalg.inv(h2e_list[idx]))
+            robot_pose = pose_c2w @ np.linalg.inv(h2e_list[idx])
+            robot_centers.append(robot_pose[:3, 3])  
+            # scene.add_geometry(rob_axis)
+        
         if i == 0:
             cam_axis = trimesh.creation.axis(origin_size=0.02, axis_length=0.2)
             cam_axis.apply_transform(pose_c2w)
-            scene.add_geometry(cam_axis)
+            # scene.add_geometry(cam_axis)
+            scene.add_geometry(rob_axis)
 
     rot = np.eye(4)
     rot[:3, :3] = Rotation.from_euler('y', np.deg2rad(180)).as_matrix()
+    print("Camera 0 pose: ", cams2world[0])
     scene.apply_transform(np.linalg.inv(cams2world[0] @ OPENGL @ rot))
     # Add global frame
-    global_frame = trimesh.creation.axis(origin_size=0.01, axis_length=0.1)
-    # scene.add_geometry(global_frame)
+    global_frame = trimesh.creation.axis(origin_size=0.01, axis_length=0.5)
+    scene.add_geometry(global_frame)
 
     if not silent:
         print('(exporting 3D scene to', outfile, ')')
     scene.export(file_obj=outfile)
+    
     if scale_factor is not None:
         for i in range(len(h2e_list)):
             print(f"Estimated H2E calibration matrix of camera {i+1}: {h2e_list[i]}")
+
+    # Save a txt file with translation and rotation of the cameras only for evaluation
+    if scale_factor is not None:
+        file_path = "data/pick_objects_1/gt.txt"  # Change this to your actual file path
+        gt_transformations = read_transformations(file_path)
+        print("GT Transformation: ", gt_transformations)
+        est_transformations = []
+        # print("GT Transformation: ", gt_transformations)
+        for i in range(len(h2e_list)):
+            R_h2e = h2e_list[i][:3, :3]
+            roll, pitch, yaw = rotation_matrix_to_rpy(R_h2e)
+            # print(f'{h2e_list[i][0,3]},{h2e_list[i][1,3]},{h2e_list[i][2,3]}, {roll},{pitch},{yaw}')
+            est_transformations.append([h2e_list[i][0,3], h2e_list[i][1,3], h2e_list[i][2,3], roll, pitch, yaw])
+        for i in range(len(h2e_list)):
+            for j in range(len(h2e_list)):
+                if i != j:
+                    rel_cam = np.linalg.inv(h2e_list[i]) @ h2e_list[j]
+                    R_rel = rel_cam[:3, :3]
+                    roll, pitch, yaw = rotation_matrix_to_rpy(R_rel)
+                    est_transformations.append([rel_cam[0,3], rel_cam[1,3], rel_cam[2,3], roll, pitch, yaw])
+                    # print(f'{rel_cam[0,3]}, {rel_cam[1,3]},{rel_cam[2,3]}, {roll}, {pitch}, {yaw}')
+
+        # print("EST Transformation: ", est_transformations)
+        camera_selected = 0
+        trans_error, rot_error = compute_errors(np.array(gt_transformations), np.array(est_transformations), len(h2e_list), camera_selected)
+        print("Translation error: ", trans_error)
+        print("Rotation error: ", rot_error)
+        if len(h2e_list) > 1:
+            print("Translation error cam2rob: ", np.mean(trans_error[:len(h2e_list)]))
+            print("Rotation error cam2rob: ", np.mean(rot_error[:len(h2e_list)]))
+        
+            print("Translation error cam2cam: ", np.mean(trans_error[len(h2e_list):]))
+            print("Rotation error cam2cam: ", np.mean(rot_error[len(h2e_list):]))
+        
     return outfile
 
 
@@ -217,7 +278,10 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
     # get optimized values from scene
     scene = scene_state.sparse_ga
     rgbimg = scene.imgs
-    masks = scene.masks[0]
+    if scene.masks is not None:
+        masks = scene.masks[0]
+    else:
+        masks = None
     focals = scene.get_focals().cpu()
     cams2world = scene.get_im_poses().cpu()
     scale_factor = scene.get_scale_factor()
@@ -227,20 +291,18 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
     h2e_list = []
     if scale_factor is not None:
         
-        # print(f"Estimated scale factor: {scale_factor}")
-        # print(f"Estimated quaternion X: {quat_X}")
-        # print(f"Estimated translation X: {trans_X}")
-        # print(f"Estimated scaled translation X: {[scale_factor[i]*trans_X[i] for i in range(len(scale_factor))]}")
         for i in range(len(scale_factor)):
             scale_factor[i] = abs(scale_factor[i])
             quat_np = quat_X[i].detach().cpu().numpy()  # Convert PyTorch tensor to NumPy
-            rotation = Rotation.from_quat(quat_np)  # Create a Rotation object
+            norm = np.linalg.norm(quat_np)
+            if np.isnan(norm) or norm == 0:
+                quat_np = np.array([1, 0, 0, 0])
+            rotation = Rotation.from_quat(quat_np, scalar_first=True)  # Create a Rotation object
             h2e = np.eye(4)
             h2e[:3, :3] = rotation.as_matrix()  # Now as_matrix() will work
 
             h2e[:3, 3] = scale_factor[i].detach().cpu().numpy() * trans_X[i].detach().cpu().numpy()
             h2e_list.append(h2e)
-            # print(f"Estimated H2E calibration matrix of camera {i+1}: {h2e}")
 
     relative_transformations = []
 
@@ -271,30 +333,13 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
             all_msk_obj.append(msk_obj)
 
     ccam2pcam = scene.get_relative_poses()
+    # ccam2pcam = scene.get_im_poses().cpu()
+    print("Scale factor: ", scale_factor)
     if scale_factor is not None:
         cams2world = ccam2pcam
     else:
         cams2world = cams2world
 
-    # num_cameras = 3  # Fixed cameras per timestep
-    # num_timesteps = len(cams2world) // num_cameras  # Compute number of timesteps
-
-    # for t in range(num_timesteps):
-    #     # Get world-to-camera transformations at time t
-    #     cam1_to_world = cams2world[t]       # Camera 1 at time t
-    #     cam2_to_world = cams2world[t + num_timesteps]  # Camera 2 at time t
-    #     cam3_to_world = cams2world[t + 2 * num_timesteps]  # Camera 3 at time t
-
-    #     # Compute relative transformations
-    #     cam1_to_world_inv = torch.linalg.inv(cam1_to_world)
-    #     cam2_to_cam1 = cam1_to_world_inv @ cam2_to_world
-    #     cam3_to_cam1 = cam1_to_world_inv @ cam3_to_world
-
-    #     # Print relative poses
-    #     print(f"Time Step {t}:")
-    #     print("Cam2 relative to Cam1:\n", cam2_to_cam1)
-    #     print("Cam3 relative to Cam1:\n", cam3_to_cam1)
-    #     print("=" * 50)
     return _convert_scene_output_to_glb(outfile, rgbimg, pts3d, pts3d_object, msk, all_msk_obj, focals, cams2world, cam_size, as_pointcloud=as_pointcloud,
                                         transparent_cams=transparent_cams, silent=silent, mask_floor=mask_floor, h2e_list=h2e_list, opt_process=calibration_process, scale_factor=scale_factor)
 
@@ -308,8 +353,6 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
     from a list of images, run mast3r inference, sparse global aligner.
     then run get_3D_model_from_scene
     """
-    
-    # folder_list = reshape_list(flattened_filelist, len(robot_poses))
 
     msks = None
     flattened_imgs, _ = load_single_images(flattened_filelist, config['image_size'], verbose=not config['silent'])
@@ -320,6 +363,8 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
         else:
             flattened_masklist = mask_list
         flattened_msks = load_single_masks(flattened_masklist, flattened_filelist, size=config['image_size'], verbose=not config['silent'])
+    else:
+        flattened_msks = None
 
     scene_graph_params = [scenegraph_type]
     if scenegraph_type in ["swin", "logwin"]:
@@ -343,7 +388,6 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
 
     if isinstance(intrinsic_params, list) and all(item is None for item in intrinsic_params):
         intrinsic_params = None
-
     scene = sparse_global_alignment(flattened_filelist, pairs, cache_dir,
                                     model, opt_process, camera_num, flattened_msks, intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs, 
                                     robot_poses=robot_poses, multiple_camera_opt=multiple_camera_opt, lr1=lr1, niter1=niter1, device=device,
@@ -513,6 +557,8 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                                                           value='Mobile-robot', label="optimization",
                                                           info="Optimization process",
                                                           interactive=True)
+                        else:
+                            calibration_process = gradio.State(None)
                         
                     with gradio.Row():
                         scenegraph_type = gradio.Dropdown([("complete: all possible image pairs", "complete"),
@@ -585,3 +631,4 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
             )
 
     demo.launch(share=share, server_name=server_name, server_port=server_port)
+

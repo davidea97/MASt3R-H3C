@@ -29,7 +29,7 @@ from dust3r.optim_factory import adjust_learning_rate_by_lr  # noqa
 from dust3r.cloud_opt.base_opt import clean_pointcloud, clean_object_pointcloud
 from dust3r.viz import SceneViz
 from mast3r.utils.general_utils import reshape_list
-
+from scipy.spatial.transform import Rotation
 from utils.file_utils import *
 
 PROCESS_ALL_IMAGES = "Multi-Camera"
@@ -73,15 +73,28 @@ class SparseGA():
         return self.cam2w
 
     def get_relative_poses(self):
+
         # Inverse of the first camera pose
+
+
         cam2w_0_inv = torch.inverse(self.cam2w[0])
-        
+
+        # ee_to_rob = np.array([[9.99807842e-01, 9.69427142e-04, -1.95790426e-02, 5.55120952e-01],
+        #                         [9.77803362e-04, -9.99999434e-01, 4.18246983e-04, 9.85213614e-05],
+        #                         [-1.95786260e-02, -4.37311068e-04, -9.99808225e-01, 5.11640885e-01],
+        #                         [0., 0., 0., 1.]])
+        # cams2world_abs = [ee_to_rob @ h2e_list[0] @ cam_pose for cam_pose in cams2world]
+        # cams2world = cams2world_abs
         # Compute relative poses
         ccam2pcam = [cam2w_0_inv @ cam2w_pose for cam2w_pose in self.cam2w]
+
         if self.scale_factor is not None:
             for i in range(len(ccam2pcam)):
                 scale_idx = i // (len(ccam2pcam)//len(self.scale_factor))
                 ccam2pcam[i][:3, 3] *= abs(self.scale_factor[scale_idx])
+                # For robot arm scale cam2w 0 translation
+                
+                # ccam2pcam[i] = cam0@ccam2pcam[i]
         return ccam2pcam
     
     def get_scale_factor(self):
@@ -1047,7 +1060,6 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
 
         else:
             print("ATTENTION: Intrinsic params must be provided.")
-
         return imgs, res_fine, scale_factor, trans_X, quat_X
 
 
