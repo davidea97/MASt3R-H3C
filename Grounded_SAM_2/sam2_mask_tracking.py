@@ -1,3 +1,4 @@
+from collections import defaultdict
 import os
 import cv2
 import json
@@ -18,7 +19,7 @@ from .utils.video_utils import create_video_from_images
 
 
 class MaskGenerator:
-    def __init__(self, config, image_list, subfolders):
+    def __init__(self, config, image_list, input_text_prompt=None, calibration_process=None):
         self.config = config
         self.sam2_checkpoint = self.config['sam2_checkpoint']
         self.model_cfg = self.config['model_cfg']
@@ -35,18 +36,53 @@ class MaskGenerator:
             device=self.device
         )
 
+        self.mask = True
+        self.floor_text = 'floor'
+        if calibration_process=="Mobile-robot":
+            print("INPUT TEXT PROMPT: ", input_text_prompt)
+            if input_text_prompt != "":
+                self.text = f"{self.floor_text} ." + input_text_prompt
+            else:
+                self.text = f"{self.floor_text} ."
+        else:
+            if input_text_prompt != "":
+                self.text = input_text_prompt
+            else:
+                self.mask = False
 
-        self.floor_text = 'floor.'
-        self.text = f"{self.floor_text}."
-
-        self.image_list = image_list
-        self.subfolders = subfolders
+        self.subfolders, self.image_list = self.reorganize_images_by_subfolder(image_list)
         self.output_folder_mask = 'masks/'
         self.output_folder_mask_colored = 'masks_colored/'
         self.output_folder_annotation = 'annotations/'
 
         print("> MaskGenerator initialized")
 
+    def get_subfolders(self):
+        return self.subfolders
+    
+    def start_mask(self):
+        return self.mask
+    
+    def get_image_list(self):
+        return self.image_list
+
+    def reorganize_images_by_subfolder(self, image_list):
+        grouped_images = defaultdict(list)
+
+        for image_path in image_list:
+            # Get everything before "/image/" as the subfolder
+            subfolder = os.path.dirname(image_path)  # e.g. 'data/.../cameraX/image'
+            base_folder = os.path.dirname(subfolder)  # e.g. 'data/.../cameraX'
+            grouped_images[base_folder].append(image_path)
+
+        # Get the list of unique subfolders
+        subfolders = list(grouped_images.keys())
+
+        # Organize the images into sublists
+        grouped_image_lists = [grouped_images[subfolder] for subfolder in subfolders]
+
+        return subfolders, grouped_image_lists
+    
     def generate_masks(self):
 
         _, ext_example = os.path.splitext(self.image_list[0][0])
@@ -79,8 +115,8 @@ class MaskGenerator:
                     h, w, _ = image_source.shape
                     boxes = boxes * torch.Tensor([w, h, w, h])
                     input_boxes = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy()
-                    if len(input_boxes>1):
-                        input_boxes = input_boxes[:1]
+                    # if len(input_boxes>1):
+                    #     input_boxes = input_boxes[:1]
                     print(f"Camera {i+1}: Image {idx}: len input_boxes: {len(input_boxes)}")
             for object_id, (label, box) in enumerate(zip(init_objects, input_boxes), start=1):
                 _, out_obj_ids, out_mask_logits = self.video_predictor.add_new_points_or_box(

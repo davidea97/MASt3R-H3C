@@ -36,7 +36,7 @@ if __name__ == '__main__':
     parser.add_argument('--input_folder', type=str, default="dust3r/croco/assets")
     parser.add_argument('--outdir', type=str, default="output")
     parser.add_argument('--config', type=str, default="config.yaml", help="Path to the configuration file")
-    parser.add_argument('--mask_floor', type=str2bool, default=True, help="True or False for floor mask generation")
+    # parser.add_argument('--mask_floor', type=str2bool, default=True, help="True or False for floor mask generation")
     parser.add_argument('--subset_size', type=int, default=0, help="Number of images to use for the reconstruction")
     parser.add_argument('--use_intrinsics', type=str2bool, default=True, help="Use intrinsic parameters for the cameras")
     parser.add_argument('--calibrate_sensor', type=str2bool, default=True, help="Use robot motion to perform the calibration step")
@@ -121,12 +121,12 @@ if __name__ == '__main__':
         if robot_poses is not None:
             final_robot_poses = robot_poses[0]
 
-    image_ext = None
-    if args.mask_floor:
-        mask_generator = MaskGenerator(config, image_sublist, subfolders)
-        print("Generating masks...")
-        objects, image_ext = mask_generator.generate_masks()
-    mask_list = generate_mask_list(args.input_folder, image_sublist, image_ext=image_ext)
+    # image_ext = None
+    # if args.mask_floor:
+    #     mask_generator = MaskGenerator(config, image_sublist, subfolders)
+    #     print("Generating masks...")
+    #     objects, image_ext = mask_generator.generate_masks()
+    # mask_list = generate_mask_list(args.input_folder, image_sublist, image_ext=image_ext)
 
     intrinsic_params_vec = []
     dist_coeffs = []
@@ -147,7 +147,7 @@ if __name__ == '__main__':
         cache_path = os.path.join(tmpdirname, chkpt_tag)
         os.makedirs(cache_path, exist_ok=True)
 
-        main_demo(cache_path, model, config, args.device, server_name, args.server_port, image_sublist, mask_list,
+        main_demo(cache_path, model, config, args.device, server_name, args.server_port, image_sublist, subfolders, args.input_folder,
                 args.silent, camera_num, intrinsic_params_vec, dist_coeffs, final_robot_poses,
                 share=args.share, gradio_delete_cache=args.gradio_delete_cache)
         

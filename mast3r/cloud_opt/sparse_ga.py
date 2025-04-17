@@ -123,7 +123,9 @@ class SparseGA():
 
         all_conf_object = None
         if masks is not None:
-            all_conf_object = [[None for _ in range(len(self.canonical_paths))] for _ in range(1)]
+            if masks[0] is not None:
+                init_unique_masks = np.unique(masks[0])
+            all_conf_object = [[None for _ in range(len(self.canonical_paths))] for _ in range(len(init_unique_masks))]
         
         for i, canon_path in enumerate(self.canonical_paths):
             (canon, canon2, conf), focal = torch.load(canon_path, map_location=device)

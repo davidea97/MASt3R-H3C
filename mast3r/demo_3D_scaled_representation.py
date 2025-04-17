@@ -22,6 +22,9 @@ import open3d as o3d
 from mast3r.cloud_opt.sparse_ga import sparse_global_alignment
 from mast3r.cloud_opt.tsdf_optimizer import TSDFPostProcess
 
+from mast3r.utils.general_utils import generate_mask_list
+from Grounded_SAM_2.sam2_mask_tracking import MaskGenerator 
+
 import mast3r.utils.path_to_dust3r  # noqa
 from dust3r.image_pairs import make_pairs
 from dust3r.utils.image import load_single_masks, load_single_images
@@ -67,7 +70,7 @@ def get_args_parser():
 
 def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, all_msk_obj, focals, cams2world, cam_size,
                                  cam_color=None, as_pointcloud=False,
-                                 transparent_cams=False, silent=False, mask_floor=True, h2e_list=None, opt_process=None, scale_factor=None):
+                                 transparent_cams=False, silent=False, mask_floor=True, mask_objects=False, h2e_list=None, opt_process=None, scale_factor=None, objects=None):
     assert len(pts3d) == len(mask) <= len(imgs) <= len(cams2world) == len(focals)
     pts3d = to_numpy(pts3d)
     imgs = to_numpy(imgs)
@@ -75,18 +78,19 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
     cams2world = to_numpy(cams2world)
 
     scene = trimesh.Scene()
+    #     all_pts3d_object = array_of_arrays
     if all_pts3d_object is not None:
-        array_of_arrays = np.array([[None for _ in range(len(all_pts3d_object))] for _ in range(1)], dtype=object)
-        for i, pts3d_object in enumerate(all_pts3d_object):
-            array = []
-            for j in range(1):
-                if j < len(pts3d_object):
-                    array_of_arrays[j][i] = pts3d_object[j]
-                else:
-                    array_of_arrays[j][i] = None
-                
-        all_pts3d_object = array_of_arrays
+        max_len = max(len(obj) for obj in all_pts3d_object)
+        array_of_arrays = np.empty((max_len, len(all_pts3d_object)), dtype=object)
 
+        for i, obj in enumerate(all_pts3d_object):
+            for j in range(max_len):
+                if j < len(obj):
+                    array_of_arrays[j, i] = obj[j]
+                else:
+                    array_of_arrays[j, i] = None
+
+        all_pts3d_object = array_of_arrays
     # full pointcloud
     if as_pointcloud:
         
@@ -97,7 +101,11 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
         valid_pts = pts[valid_msk]
         valid_col = col[valid_msk]
         if all_pts3d_object is not None:
-            for i, pts3d_object in enumerate(all_pts3d_object):
+            for i, obj_name in enumerate(objects):
+                # if obj_name != "floor":
+                #     continue
+
+                pts3d_object = all_pts3d_object[i]
                 if pts3d_object is not None:
                     pts3d_object = to_numpy(pts3d_object)
                     
@@ -110,9 +118,13 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
                     valid_pts_obj = pts_obj[valid_mask_obj]
 
                     # Generate a random color (RGB values between 0 and 1)
-                    random_color = np.random.rand(3)  # Random color for the object
-                    if opt_process == "Mobile-robot":
-                        
+                    obj_random_color = np.random.rand(3)  # Random color for the object
+                    obj_color_mask = np.isin(valid_pts, valid_pts_obj, assume_unique=False).all(axis=1)
+                    if mask_objects and obj_name != "floor":
+                        # valid_col[obj_color_mask] = [1, 0, 0]  # Red color for object points
+                        valid_col[obj_color_mask] = obj_random_color
+                    if opt_process == "Mobile-robot" and obj_name == "floor":
+                        floor_random_color = np.random.rand(3)  # Random color for the floor
                         # Prepare Open3D point cloud and apply RANSAC for plane fitting
                         pcd = o3d.geometry.PointCloud()
                         pcd.points = o3d.utility.Vector3dVector(valid_pts_obj)
@@ -120,10 +132,10 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
                         # Apply RANSAC for ground plane segmentation
                         plane_model, inliers = pcd.segment_plane(distance_threshold=0.01, ransac_n=5, num_iterations=1000)
                         a, b, c, d = plane_model
-                        obj_color_mask = np.isin(valid_pts, valid_pts_obj, assume_unique=False).all(axis=1)
+                        floor_color_mask = np.isin(valid_pts, valid_pts_obj, assume_unique=False).all(axis=1)
                         if mask_floor:
                             # valid_col[obj_color_mask] = [1, 0, 0]  # Red color for object points
-                            valid_col[obj_color_mask] = random_color  # Random color for object points
+                            valid_col[floor_color_mask] = floor_random_color  # Random color for object points
 
         pct_updated = trimesh.PointCloud(valid_pts, colors=valid_col)
         scene.add_geometry(pct_updated)
@@ -264,8 +276,8 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
     return outfile
 
 
-def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_pointcloud=False, mask_sky=False, mask_floor=False, calibration_process="Mobile-robot",
-                            clean_depth=False, transparent_cams=False, TSDF_thresh=0):
+def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_pointcloud=False, mask_sky=False, mask_floor=False, mask_objects=False, calibration_process="Mobile-robot",
+                            clean_depth=False, transparent_cams=False, TSDF_thresh=0, objects=None):
     """
     extract 3D_model (glb file) from a reconstructed scene
     """
@@ -278,6 +290,7 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
     # get optimized values from scene
     scene = scene_state.sparse_ga
     rgbimg = scene.imgs
+
     if scene.masks is not None:
         masks = scene.masks[0]
     else:
@@ -314,7 +327,6 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
 
     # Convert list to a tensor for easier manipulation if desired
     relative_transformations = torch.stack(relative_transformations)
-
     if TSDF_thresh > 0:
         tsdf = TSDFPostProcess(scene, TSDF_thresh=TSDF_thresh)
         pts3d, pts3d_object, _, confs = to_numpy(tsdf.get_dense_pts3d(masks=masks, clean_depth=clean_depth))
@@ -331,7 +343,6 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
             # Now apply the comparison to the valid conf_object elements
             msk_obj = to_numpy([c > min_conf_thr for c in valid_conf_object])
             all_msk_obj.append(msk_obj)
-
     ccam2pcam = scene.get_relative_poses()
     # ccam2pcam = scene.get_im_poses().cpu()
     print("Scale factor: ", scale_factor)
@@ -341,22 +352,35 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
         cams2world = cams2world
 
     return _convert_scene_output_to_glb(outfile, rgbimg, pts3d, pts3d_object, msk, all_msk_obj, focals, cams2world, cam_size, as_pointcloud=as_pointcloud,
-                                        transparent_cams=transparent_cams, silent=silent, mask_floor=mask_floor, h2e_list=h2e_list, opt_process=calibration_process, scale_factor=scale_factor)
+                                        transparent_cams=transparent_cams, silent=silent, mask_floor=mask_floor, mask_objects=mask_objects, h2e_list=h2e_list, opt_process=calibration_process, scale_factor=scale_factor, objects=objects)
 
 
 
 def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, config, 
-                            current_scene_state, flattened_filelist, opt_process, camera_num, intrinsic_params, dist_coeffs, mask_list, robot_poses, calibration_process, multiple_camera_opt, lr1, niter1, as_pointcloud, mask_sky, 
-                            mask_floor, clean_depth, transparent_cams, scenegraph_type, winsize,
-                            win_cyclic, **kw):
+                            current_scene_state, flattened_filelist, opt_process, camera_num, intrinsic_params, dist_coeffs, robot_poses, calibration_process, multiple_camera_opt, lr1, niter1, as_pointcloud, mask_sky, 
+                            mask_floor, mask_objects, clean_depth, transparent_cams, scenegraph_type, winsize,
+                            win_cyclic, input_text_prompt, **kw):
     """
     from a list of images, run mast3r inference, sparse global aligner.
     then run get_3D_model_from_scene
     """
 
     msks = None
+    # print("Imagelist: ", flattened_filelist)
     flattened_imgs, _ = load_single_images(flattened_filelist, config['image_size'], verbose=not config['silent'])
     
+    image_ext = None
+    mask_generator = MaskGenerator(config, flattened_filelist, input_text_prompt, calibration_process)
+    if mask_generator.start_mask() == True:
+        print("Generating masks...")
+        objects, image_ext = mask_generator.generate_masks()
+        subfolders = mask_generator.get_subfolders()
+        image_sublist = mask_generator.get_image_list()
+
+        mask_list = generate_mask_list(subfolders, image_sublist, image_ext=image_ext)
+    else:
+        mask_list = None
+
     if mask_list is not None and len(mask_list) > 0:
         if opt_process == PROCESS_ALL_IMAGES:
             flattened_masklist = [item for sublist in mask_list for item in sublist]
@@ -402,8 +426,8 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
         outfile_name = tempfile.mktemp(suffix='_scene.glb', dir=outdir)
 
     scene_state = SparseGAState(scene, gradio_delete_cache, cache_dir, outfile_name)
-    outfile = get_3D_model_from_scene(silent, scene_state, config['cam_size'], config['min_conf_thr'], as_pointcloud, mask_sky, mask_floor, calibration_process,
-                                      clean_depth, transparent_cams, config['TSDF_thresh'])
+    outfile = get_3D_model_from_scene(silent, scene_state, config['cam_size'], config['min_conf_thr'], as_pointcloud, mask_sky, mask_floor, mask_objects, calibration_process,
+                                      clean_depth, transparent_cams, config['TSDF_thresh'], objects)
     
     images = [cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in flattened_filelist]
     return scene_state, outfile, images
@@ -434,7 +458,7 @@ def set_scenegraph_options(inputfiles, win_cyclic, scenegraph_type):
     return win_col, winsize, win_cyclic
 
 
-def main_demo(tmpdirname, model, config, device, server_name, server_port, image_list=None, mask_list=None, silent=False, camera_num=None, intrinsic_params_vec=None, dist_coeffs=None, robot_poses=None,
+def main_demo(tmpdirname, model, config, device, server_name, server_port, image_list=None, subfolders=None, input_folder=None, silent=False, camera_num=None, intrinsic_params_vec=None, dist_coeffs=None, robot_poses=None,
               share=False, gradio_delete_cache=False):
     
     if not silent:
@@ -446,20 +470,20 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
 
     def get_context(delete_cache):
         css = """.gradio-container {margin: 0 !important; min-width: 100%};"""
-        title = "MASt3R-H3C Demo"
+        title = "MASt3R-HEC Demo"
         if delete_cache:
             return gradio.Blocks(css=css, title=title, delete_cache=(delete_cache, delete_cache))
         else:
             return gradio.Blocks(css=css, title="MASt3R-HEC Demo")  # for compatibility with older versions
 
-    def process_images(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, masks, robot_pose, calibration_process, multiple_camera_opt, lr1, niter1,
-                   as_pointcloud, mask_sky, mask_floor, clean_depth, transparent_cams, scenegraph_type,
-                   winsize, win_cyclic):
+    def process_images(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, robot_pose, calibration_process, multiple_camera_opt, lr1, niter1,
+                   as_pointcloud, mask_sky, mask_floor, mask_objects, clean_depth, transparent_cams, scenegraph_type,
+                   winsize, win_cyclic, input_text_prompt):
         if isinstance(input_images, list) and all(isinstance(img, str) for img in input_images):
             # Single list of images
-            return recon_fun(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, masks, robot_pose, calibration_process, multiple_camera_opt,
-                            lr1, niter1, as_pointcloud, mask_sky, mask_floor, clean_depth, transparent_cams, scenegraph_type,
-                            winsize, win_cyclic)
+            return recon_fun(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, robot_pose, calibration_process, multiple_camera_opt,
+                            lr1, niter1, as_pointcloud, mask_sky, mask_floor, mask_objects, clean_depth, transparent_cams, scenegraph_type,
+                            winsize, win_cyclic, input_text_prompt)
         
         else:
             raise ValueError("No valid input images provided!")
@@ -491,7 +515,7 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                         intrinsic_params = intrinsic_params_vec if intrinsic_params_vec else None
                         dist_coeff = dist_coeffs if dist_coeffs else None
                         robot_pose = robot_poses if robot_poses else None
-                        masks = mask_list if mask_list else None
+                        # masks = mask_list if mask_list else None
                         formatted_list = "\n\n".join(
                             [f"Camera {i+1}:\n" + "\n".join(img_list) for i, img_list in enumerate(selected_images)]
                         )
@@ -506,11 +530,11 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                         dist_coeff = [dist_coeffs[index]] if dist_coeffs else None
                         # robot_pose = robot_poses[index] if robot_poses else None
                         robot_pose = robot_poses if robot_poses else None
-                        masks = mask_list[index] if mask_list else None
+                        # masks = mask_list[index] if mask_list else None
                         formatted_list = "\n".join(selected_images) if isinstance(selected_images, list) else "Processing all image lists."
                         selected_images_flat = selected_images
                         camera_num = 1
-                    return formatted_list, selected_images_flat, intrinsic_params, dist_coeff, robot_pose, masks, selected_list, camera_num
+                    return formatted_list, selected_images_flat, intrinsic_params, dist_coeff, robot_pose, selected_list, camera_num, selected_images_flat
 
                 
                 # Dynamically display the selected image paths
@@ -519,11 +543,13 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                     lines=5,  # Adjust to show more lines
                     interactive=False
                 )
+                image_preview_gallery = gradio.Gallery(label="Image Preview", columns=10, height="auto")
+                input_text_prompt = gradio.Textbox(label="Text Prompt for Segementation", placeholder="Enter the objects you want to segment in 3D, separated by a period (e.g., chair . table . lamp .)")
 
                 intrinsic_state = gradio.State(None)
                 dist_coeff_state = gradio.State(None)
                 robot_pose_state = gradio.State(None)
-                masks_state = gradio.State(None)
+                # masks_state = gradio.State(None)
                 opt_process_state = gradio.State(None)
                 inputfiles = gradio.State(None)
                 camera_num = gradio.State(None)
@@ -532,7 +558,7 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                 list_selector.change(
                     fn=update_image_list,
                     inputs=list_selector,
-                    outputs=[selected_image_paths, inputfiles, intrinsic_state, dist_coeff_state, robot_pose_state, masks_state, opt_process_state, camera_num]
+                    outputs=[selected_image_paths, inputfiles, intrinsic_state, dist_coeff_state, robot_pose_state, opt_process_state, camera_num, image_preview_gallery]
                 )
             else:
                 # Placeholder for dynamically updated file input
@@ -580,6 +606,7 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                 as_pointcloud = gradio.Checkbox(value=True, label="As pointcloud")
                 mask_sky = gradio.Checkbox(value=False, label="Mask sky")
                 mask_floor = gradio.Checkbox(value=False, label="Mask floor")
+                mask_objects = gradio.Checkbox(value=False, label="Mask objects")
                 clean_depth = gradio.Checkbox(value=True, label="Clean-up depthmaps")
                 transparent_cams = gradio.Checkbox(value=False, label="Transparent cameras")
                 multiple_camera_opt = gradio.Checkbox(value=False, label="Multiple camera optimization")
@@ -599,34 +626,40 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
                               inputs=[inputfiles, win_cyclic, scenegraph_type],
                               outputs=[win_col, winsize, win_cyclic])
 
-            as_pointcloud.change(fn=model_from_scene_fun,
-                                 inputs=[scene, as_pointcloud, mask_sky, mask_floor,
+            as_pointcloud.change(fn=model_from_scene_fun, 
+                                 inputs=[scene, as_pointcloud, mask_sky, mask_floor, mask_objects,
                                          clean_depth, transparent_cams],
                                  outputs=outmodel)
             
             mask_sky.change(fn=model_from_scene_fun,
-                            inputs=[scene, as_pointcloud, mask_sky,mask_floor,
+                            inputs=[scene, as_pointcloud, mask_sky, mask_floor, mask_objects,
                                     clean_depth, transparent_cams],
                             outputs=outmodel)
             
             mask_floor.change(fn=model_from_scene_fun,
-                               inputs=[scene, as_pointcloud, mask_sky, mask_floor,
+                               inputs=[scene, as_pointcloud, mask_sky, mask_floor, mask_objects,
                                        clean_depth, transparent_cams],
                                outputs=outmodel)
+            
+            mask_objects.change(fn=model_from_scene_fun,
+                               inputs=[scene, as_pointcloud, mask_sky, mask_floor, mask_objects,
+                                       clean_depth, transparent_cams],
+                               outputs=outmodel)
+            
 
             clean_depth.change(fn=model_from_scene_fun,
-                               inputs=[scene, as_pointcloud, mask_sky,mask_floor,
+                               inputs=[scene, as_pointcloud, mask_sky,mask_floor, mask_objects,
                                        clean_depth, transparent_cams],
                                outputs=outmodel)
             transparent_cams.change(model_from_scene_fun,
-                                    inputs=[scene, as_pointcloud, mask_sky,mask_floor,
+                                    inputs=[scene, as_pointcloud, mask_sky,mask_floor, mask_objects,
                                             clean_depth, transparent_cams],
                                     outputs=outmodel)
 
             run_btn.click(
                 fn=process_images,
-                inputs=[scene, inputfiles, opt_process_state, camera_num, intrinsic_state, dist_coeff_state, masks_state, robot_pose_state, calibration_process, multiple_camera_opt, lr1, niter1, as_pointcloud, mask_sky, mask_floor,
-                        clean_depth, transparent_cams, scenegraph_type, winsize, win_cyclic],
+                inputs=[scene, inputfiles, opt_process_state, camera_num, intrinsic_state, dist_coeff_state, robot_pose_state, calibration_process, multiple_camera_opt, lr1, niter1, as_pointcloud, mask_sky, mask_floor, mask_objects,
+                        clean_depth, transparent_cams, scenegraph_type, winsize, win_cyclic, input_text_prompt],
                 outputs=[scene, outmodel, outgallery]
             )
 
