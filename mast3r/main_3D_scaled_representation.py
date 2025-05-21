@@ -357,16 +357,14 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
 
 
 def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, config, 
-                            current_scene_state, flattened_filelist, opt_process, camera_num, intrinsic_params, dist_coeffs, robot_poses, calibration_process, multiple_camera_opt, lr1, niter1, as_pointcloud, mask_sky, 
+                            camera_to_use, flattened_filelist, camera_num, intrinsic_params, dist_coeffs, robot_poses, calibration_process, multiple_camera_opt, lr1, niter1, as_pointcloud, mask_sky, 
                             mask_floor, mask_objects, clean_depth, transparent_cams, scenegraph_type, winsize,
                             win_cyclic, input_text_prompt, **kw):
     """
     from a list of images, run mast3r inference, sparse global aligner.
     then run get_3D_model_from_scene
     """
-
-    msks = None
-    # print("Imagelist: ", flattened_filelist)
+    opt_process = PROCESS_ALL_IMAGES if camera_to_use == 0 else f"Camera {camera_to_use}"
     flattened_imgs, _ = load_single_images(flattened_filelist, config['image_size'], verbose=not config['silent'])
     
     image_ext = None
@@ -383,7 +381,7 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
         mask_list = None
 
     if mask_list is not None and len(mask_list) > 0:
-        if opt_process == PROCESS_ALL_IMAGES:
+        if camera_to_use == 0:
             flattened_masklist = [item for sublist in mask_list for item in sublist]
         else:
             flattened_masklist = mask_list
@@ -398,34 +396,26 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
         scene_graph_params.append('noncyclic')
     scene_graph = '-'.join(scene_graph_params)
 
-    print("Image list: ", flattened_imgs)
     pairs = make_pairs(flattened_imgs, scene_graph=scene_graph, prefilter=None, symmetrize=True)
 
     # Sparse GA (forward mast3r -> matching -> 3D optim -> 2D refinement -> triangulation)
-    if current_scene_state is not None and \
-        not current_scene_state.should_delete and \
-            current_scene_state.cache_dir is not None:
-        cache_dir = current_scene_state.cache_dir
-    elif gradio_delete_cache:
+    if gradio_delete_cache:
         cache_dir = tempfile.mkdtemp(suffix='_cache', dir=outdir)
     else:
         cache_dir = os.path.join(outdir, 'cache')
+
     os.makedirs(cache_dir, exist_ok=True)
 
     if isinstance(intrinsic_params, list) and all(item is None for item in intrinsic_params):
         intrinsic_params = None
+    print("> Start global optimization")
     scene = sparse_global_alignment(flattened_filelist, pairs, cache_dir,
                                     model, opt_process, camera_num, flattened_msks, intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs, 
                                     robot_poses=robot_poses, multiple_camera_opt=multiple_camera_opt, lr1=lr1, niter1=niter1, device=device,
                                     opt_depth=True, shared_intrinsics=config['shared_intrinsics'],
                                     matching_conf_thr=config['matching_conf_thr'], **kw)
 
-    if current_scene_state is not None and \
-        not current_scene_state.should_delete and \
-            current_scene_state.outfile_name is not None:
-        outfile_name = current_scene_state.outfile_name
-    else:
-        outfile_name = tempfile.mktemp(suffix='_scene.glb', dir=outdir)
+    outfile_name = tempfile.mktemp(suffix='_scene.glb', dir=outdir)
 
     scene_state = SparseGAState(scene, gradio_delete_cache, cache_dir, outfile_name)
     outfile = get_3D_model_from_scene(silent, scene_state, config['cam_size'], config['min_conf_thr'], as_pointcloud, mask_sky, mask_floor, mask_objects, calibration_process,
@@ -460,210 +450,13 @@ def set_scenegraph_options(inputfiles, win_cyclic, scenegraph_type):
     return win_col, winsize, win_cyclic
 
 
-def main_demo(tmpdirname, model, config, device, server_name, server_port, image_list=None, subfolders=None, input_folder=None, silent=False, camera_num=None, intrinsic_params_vec=None, dist_coeffs=None, robot_poses=None,
-              share=False, gradio_delete_cache=False):
-    
+def main_demo(tmpdirname, model, config, device, input_images=None, silent=False, camera_num=None, intrinsic_params=None, dist_coeffs=None, robot_poses=None, camera_to_use=0, calibration_process="Robot Arm", 
+              multiple_camera_opt=True, input_text_prompt="", share=False, gradio_delete_cache=False):
+
     if not silent:
         print('Outputting stuff in', tmpdirname)
 
-    recon_fun = functools.partial(get_reconstructed_scene, tmpdirname, gradio_delete_cache, model, device,
-                                   silent, config)
-    model_from_scene_fun = functools.partial(get_3D_model_from_scene, silent)
-
-    def get_context(delete_cache):
-        css = """.gradio-container {margin: 0 !important; min-width: 100%};"""
-        title = "MASt3R-HEC Demo"
-        if delete_cache:
-            return gradio.Blocks(css=css, title=title, delete_cache=(delete_cache, delete_cache))
-        else:
-            return gradio.Blocks(css=css, title="MASt3R-HEC Demo")  # for compatibility with older versions
-
-    def process_images(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, robot_pose, calibration_process, multiple_camera_opt, lr1, niter1,
-                   as_pointcloud, mask_sky, mask_floor, mask_objects, clean_depth, transparent_cams, scenegraph_type,
-                   winsize, win_cyclic, input_text_prompt):
-        if isinstance(input_images, list) and all(isinstance(img, str) for img in input_images):
-            # Single list of images
-            return recon_fun(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, robot_pose, calibration_process, multiple_camera_opt,
-                            lr1, niter1, as_pointcloud, mask_sky, mask_floor, mask_objects, clean_depth, transparent_cams, scenegraph_type,
-                            winsize, win_cyclic, input_text_prompt)
-        
-        else:
-            raise ValueError("No valid input images provided!")
-
-    with get_context(gradio_delete_cache) as demo:
-        # Scene state is saved so that you can change parameters without rerunning the inference
-        scene = gradio.State(None)
-        gradio.HTML('<h2 style="text-align: center;">MASt3R-HEC Demo</h2>')
-
-        with gradio.Column():
-            if image_list:
-                gradio.HTML('<h3>Provided Images:</h3>')
-                if len(image_list) > 1:
-                    choices = [PROCESS_ALL_IMAGES] + [f"Camera {i+1}" for i in range(len(image_list))]
-                else:
-                    choices = [f"Camera {i+1}" for i in range(len(image_list))]
-                # Dropdown to select the image list
-                list_selector = gradio.Dropdown(
-                    choices=choices,
-                    value="Select the image list to process",
-                    label="Select Image List",
-                )
-
-                
-                def update_image_list(selected_list):
-                    if selected_list == PROCESS_ALL_IMAGES:
-                        # Use the whole vector of image lists without flattening
-                        selected_images = image_list
-                        intrinsic_params = intrinsic_params_vec if intrinsic_params_vec else None
-                        dist_coeff = dist_coeffs if dist_coeffs else None
-                        robot_pose = robot_poses if robot_poses else None
-                        # masks = mask_list if mask_list else None
-                        formatted_list = "\n\n".join(
-                            [f"Camera {i+1}:\n" + "\n".join(img_list) for i, img_list in enumerate(selected_images)]
-                        )
-                        camera_num = len(selected_images)
-                        selected_images_flat = [img for sublist in selected_images for img in sublist]
-
-                    else:
-                        # Extract the list index from the selection
-                        index = int(selected_list.split()[1]) - 1
-                        selected_images = image_list[index]
-                        intrinsic_params = intrinsic_params_vec[index] if intrinsic_params_vec else None
-                        dist_coeff = [dist_coeffs[index]] if dist_coeffs else None
-                        # robot_pose = robot_poses[index] if robot_poses else None
-                        robot_pose = robot_poses if robot_poses else None
-                        # masks = mask_list[index] if mask_list else None
-                        formatted_list = "\n".join(selected_images) if isinstance(selected_images, list) else "Processing all image lists."
-                        selected_images_flat = selected_images
-                        camera_num = 1
-                    return formatted_list, selected_images_flat, intrinsic_params, dist_coeff, robot_pose, selected_list, camera_num, selected_images_flat
-
-                
-                # Dynamically display the selected image paths
-                selected_image_paths = gradio.Textbox(
-                    label="Selected Image Paths",
-                    lines=5,  # Adjust to show more lines
-                    interactive=False
-                )
-                image_preview_gallery = gradio.Gallery(label="Image Preview", columns=10, height="auto")
-                input_text_prompt = gradio.Textbox(label="Text Prompt for Segementation", placeholder="Enter the objects you want to segment in 3D, separated by a period (e.g., chair . table . lamp .)")
-
-                intrinsic_state = gradio.State(None)
-                dist_coeff_state = gradio.State(None)
-                robot_pose_state = gradio.State(None)
-                # masks_state = gradio.State(None)
-                opt_process_state = gradio.State(None)
-                inputfiles = gradio.State(None)
-                camera_num = gradio.State(None)
-
-                # Update handlers for list selection
-                list_selector.change(
-                    fn=update_image_list,
-                    inputs=list_selector,
-                    outputs=[selected_image_paths, inputfiles, intrinsic_state, dist_coeff_state, robot_pose_state, opt_process_state, camera_num, image_preview_gallery]
-                )
-            else:
-                # Placeholder for dynamically updated file input
-                inputfiles = gradio.File(
-                    file_count="multiple",
-                    label="Files to Process"
-                )
-                # Fall back to file upload if no image_list is provided
-                gradio.HTML('<h3>Upload Images:</h3>')
-                inputfiles = gradio.File(file_count="multiple", label="Upload Images")
-
-            # Configurable settings
-            with gradio.Row():
-                with gradio.Column():
-                    with gradio.Row():
-                        lr1 = gradio.Slider(label="Coarse LR", value=0.07, minimum=0.01, maximum=0.2, step=0.01)
-                        niter1 = gradio.Number(value=500, precision=0, minimum=0, maximum=10_000,
-                                               label="num_iterations", info="For coarse alignment!")
-                        
-                        if robot_poses is not None:
-                            calibration_process = gradio.Dropdown(["Mobile-robot", "Robot Arm"],
-                                                          value='Mobile-robot', label="optimization",
-                                                          info="Optimization process",
-                                                          interactive=True)
-                        else:
-                            calibration_process = gradio.State(None)
-                        
-                    with gradio.Row():
-                        scenegraph_type = gradio.Dropdown([("complete: all possible image pairs", "complete"),
-                                                           ("swin: sliding window", "swin"),
-                                                           ("logwin: sliding window with long range", "logwin"),
-                                                           ("oneref: match one image with all", "oneref")],
-                                                          value='complete', label="Scenegraph",
-                                                          info="Define how to make pairs",
-                                                          interactive=True)
-                        with gradio.Column(visible=False) as win_col:
-                            winsize = gradio.Slider(label="Scene Graph: Window Size", value=1,
-                                                    minimum=1, maximum=1, step=1)
-                            win_cyclic = gradio.Checkbox(value=False, label="Cyclic sequence")
-            run_btn = gradio.Button("Run 3D reconstruction")
-
-            # with gradio.Row():
-            #     cam_size = gradio.Slider(label="cam_size", value=0.2, minimum=0.001, maximum=1.0, step=0.001)
-            with gradio.Row():
-                as_pointcloud = gradio.Checkbox(value=True, label="As pointcloud")
-                mask_sky = gradio.Checkbox(value=False, label="Mask sky")
-                mask_floor = gradio.Checkbox(value=False, label="Mask floor")
-                mask_objects = gradio.Checkbox(value=False, label="Mask objects")
-                clean_depth = gradio.Checkbox(value=True, label="Clean-up depthmaps")
-                transparent_cams = gradio.Checkbox(value=False, label="Transparent cameras")
-                multiple_camera_opt = gradio.Checkbox(value=False, label="Multiple camera optimization")
-
-            outmodel = gradio.Model3D()
-            outgallery = gradio.Gallery(label='rgb', columns=4, height="100%")
-
-            # events
-            scenegraph_type.change(set_scenegraph_options,
-                                   inputs=[inputfiles, win_cyclic, scenegraph_type],
-                                   outputs=[win_col, winsize, win_cyclic])
-            inputfiles.change(set_scenegraph_options,
-                              inputs=[inputfiles, win_cyclic, scenegraph_type],
-                              outputs=[win_col, winsize, win_cyclic])
-
-            win_cyclic.change(set_scenegraph_options,
-                              inputs=[inputfiles, win_cyclic, scenegraph_type],
-                              outputs=[win_col, winsize, win_cyclic])
-
-            as_pointcloud.change(fn=model_from_scene_fun, 
-                                 inputs=[scene, as_pointcloud, mask_sky, mask_floor, mask_objects,
-                                         clean_depth, transparent_cams],
-                                 outputs=outmodel)
-            
-            mask_sky.change(fn=model_from_scene_fun,
-                            inputs=[scene, as_pointcloud, mask_sky, mask_floor, mask_objects,
-                                    clean_depth, transparent_cams],
-                            outputs=outmodel)
-            
-            mask_floor.change(fn=model_from_scene_fun,
-                               inputs=[scene, as_pointcloud, mask_sky, mask_floor, mask_objects,
-                                       clean_depth, transparent_cams],
-                               outputs=outmodel)
-            
-            mask_objects.change(fn=model_from_scene_fun,
-                               inputs=[scene, as_pointcloud, mask_sky, mask_floor, mask_objects,
-                                       clean_depth, transparent_cams],
-                               outputs=outmodel)
-            
-
-            clean_depth.change(fn=model_from_scene_fun,
-                               inputs=[scene, as_pointcloud, mask_sky,mask_floor, mask_objects,
-                                       clean_depth, transparent_cams],
-                               outputs=outmodel)
-            transparent_cams.change(model_from_scene_fun,
-                                    inputs=[scene, as_pointcloud, mask_sky,mask_floor, mask_objects,
-                                            clean_depth, transparent_cams],
-                                    outputs=outmodel)
-
-            run_btn.click(
-                fn=process_images,
-                inputs=[scene, inputfiles, opt_process_state, camera_num, intrinsic_state, dist_coeff_state, robot_pose_state, calibration_process, multiple_camera_opt, lr1, niter1, as_pointcloud, mask_sky, mask_floor, mask_objects,
-                        clean_depth, transparent_cams, scenegraph_type, winsize, win_cyclic, input_text_prompt],
-                outputs=[scene, outmodel, outgallery]
-            )
-
-    demo.launch(share=share, server_name=server_name, server_port=server_port)
-
+    get_reconstructed_scene(tmpdirname, gradio_delete_cache, model, device, silent, config, 
+                        camera_to_use, input_images, camera_num, intrinsic_params, dist_coeffs, robot_poses, calibration_process, multiple_camera_opt, lr1=0.07, niter1=500, as_pointcloud=False, mask_sky=False, 
+                        mask_floor=False, mask_objects=False, clean_depth=True, transparent_cams=False, scenegraph_type="complete", winsize=1,
+                        win_cyclic=False, input_text_prompt=input_text_prompt)

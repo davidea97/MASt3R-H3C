@@ -154,10 +154,17 @@ class SparseGA():
         # densify sparse depthmaps
         if masks is None:
             pts3d_object = None
-            pts3d, depthmaps = make_pts3d(anchors, self.intrinsics, self.cam2w, [
-                                        d.ravel() for d in self.depthmaps], base_focals=base_focals, ret_depth=True)
-            if clean_depth:
+            if self.scale_factor is None:
+                pts3d, depthmaps = make_pts3d(anchors, self.intrinsics, self.cam2w, [
+                                            d.ravel() for d in self.depthmaps], base_focals=base_focals, ret_depth=True)
+                if clean_depth:
                     confs = clean_pointcloud(confs, self.intrinsics, inv(self.cam2w), depthmaps, pts3d)
+            else:
+                scale_factor_list = [self.scale_factor[i // int(len(base_focals)/len(self.scale_factor))] for i in range(len(base_focals))]
+                pts3d, depthmaps = make_pts3d(anchors, self.intrinsics, self.get_relative_poses(), [
+                                            d.ravel() for d in self.depthmaps], base_focals=base_focals, ret_depth=True, scale_factor=scale_factor_list)
+                if clean_depth:
+                    confs = clean_pointcloud(confs, self.intrinsics, inv(torch.stack(self.get_relative_poses(), dim=0)), depthmaps, pts3d)
         else:
             if self.scale_factor is None:
                 pts3d, pts3d_object, depthmaps, depthmaps_obj = make_pts3d_mask(anchors, self.intrinsics, self.cam2w, [
@@ -168,7 +175,6 @@ class SparseGA():
             else:
                 # Extract 3D points and 3D object points with respect to the first camera reference frame
                 scale_factor_list = [self.scale_factor[i // int(len(base_focals)/len(self.scale_factor))] for i in range(len(base_focals))]
-
                 pts3d, pts3d_object, depthmaps, depthmaps_obj  = make_pts3d_mask(anchors, self.intrinsics, self.get_relative_poses(), [
                                             d.ravel() for d in self.depthmaps], masks=masks, base_focals=base_focals, ret_depth=True, scale_factor=scale_factor_list)
 
@@ -1077,7 +1083,7 @@ def proj3d(inv_K, pixels, z):
     return z.unsqueeze(-1) * (pixels * inv_K.diag() + inv_K[:, 2] * mask110(z.device, z.dtype))
 
 
-def make_pts3d(anchors, K, cam2w, depthmaps, base_focals=None, ret_depth=False):
+def make_pts3d(anchors, K, cam2w, depthmaps, base_focals=None, ret_depth=False, scale_factor=None):
     focals = K[:, 0, 0]
     invK = inv(K)
     all_pts3d = []
@@ -1092,8 +1098,11 @@ def make_pts3d(anchors, K, cam2w, depthmaps, base_focals=None, ret_depth=False):
             # compensate for focal
             # depth + depth * (offset - 1) * base_focal / focal
             # = depth * (1 + (offset - 1) * (base_focal / focal))
-            offsets = 1 + (offsets - 1) * (base_focals[img] / focals[img])
-
+            if scale_factor is None:
+                offsets = 1 + (offsets - 1) * (base_focals[img] / focals[img])
+            else:
+                offsets = (1 + (offsets - 1) * (base_focals[img] / focals[img]))*scale_factor[img]
+                
         pts3d = proj3d(invK[img], pixels, depthmaps[img][idxs] * offsets)
         if ret_depth:
             depth_out.append(pts3d[..., 2])  # before camera rotation
