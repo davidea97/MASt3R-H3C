@@ -34,6 +34,138 @@ from dust3r.demo import get_args_parser as dust3r_get_args_parser
 from mast3r.utils.general_utils import rotation_matrix_to_rpy, compute_errors, read_transformations
 import matplotlib.pyplot as pl
 
+
+from scipy.spatial import cKDTree
+
+def compute_chessboard_square_sizes(pts3d, pattern_size):
+    """
+    Calcola le distanze tra corner adiacenti in 3D (orizzontali e verticali).
+
+    Args:
+        pts3d: (N, 3) array dei corner 3D (ordinati da OpenCV)
+        pattern_size: (cols, rows), numero di corner interni (es: (9, 6))
+
+    Returns:
+        horizontal_distances: distanze tra corner orizzontali
+        vertical_distances: distanze tra corner verticali
+    """
+    cols, rows = pattern_size
+    pts3d = np.array(pts3d)
+    if pts3d.shape[0] != cols * rows:
+        print("⚠️ Numero di corner 3D insufficiente per pattern completo.")
+        return None, None
+
+    pts3d_grid = pts3d.reshape((rows, cols, 3))  # shape (rows, cols, 3)
+
+    horiz_dists = []
+    vert_dists = []
+
+    for r in range(rows):
+        for c in range(cols - 1):
+            d = np.linalg.norm(pts3d_grid[r, c + 1] - pts3d_grid[r, c])
+            horiz_dists.append(d)
+
+    for r in range(rows - 1):
+        for c in range(cols):
+            d = np.linalg.norm(pts3d_grid[r + 1, c] - pts3d_grid[r, c])
+            vert_dists.append(d)
+
+    return np.array(horiz_dists), np.array(vert_dists)
+
+def extract_3d_chessboard_corners(imgs, camera_poses, K, pcd_path, pattern_size=(7, 6), max_pixel_error=1):
+    """
+    Estrae i corner della scacchiera da immagini e trova i punti 3D corrispondenti nella pointcloud.
+
+    Args:
+        imgs: lista di immagini RGB in float32 (valori [0,1])
+        camera_poses: lista di (4x4) numpy array, uno per immagine (T_c2w)
+        K: matrice intrinseca 3x3
+        pointcloud_path: path a un file .ply con la nuvola di punti
+        pattern_size: dimensione griglia scacchiera (cols, rows)
+        max_pixel_error: distanza massima in pixel per considerare un match valido
+
+    Returns:
+        lista di (Nx2, Nx3): corner 2D e corrispondenti 3D per ogni immagine
+    """
+    # Carica point cloud
+    pcd = o3d.io.read_point_cloud(pcd_path)
+    points_world = np.asarray(pcd.points)  # Nx3
+
+    results = []
+
+    output_dir = "output_corners"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    for i, img in enumerate(imgs):
+        img_rgb = (img * 255).astype(np.uint8)
+        img_vis = img_rgb.copy()
+
+        # Converti immagine in uint8
+        img_gray = (img * 255).astype(np.uint8)
+        if img_gray.shape[2] == 3:
+            img_gray = cv2.cvtColor(img_gray, cv2.COLOR_RGB2GRAY)
+
+        # Trova corner
+        # found, corners = cv2.findChessboardCorners(img_gray, pattern_size)
+        flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
+        found, corners = cv2.findChessboardCorners(img_gray, pattern_size, flags)
+        
+        if not found:
+            results.append((None, None))
+            continue
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+        corners = cv2.cornerSubPix(img_gray, corners, (11,11), (-1,-1), criteria)
+        
+        img_with_corners = cv2.drawChessboardCorners(img_vis.copy(), pattern_size, corners, found)
+
+        # Salva l’immagine con i corner
+        outpath = os.path.join(output_dir, f"image_{i:03d}_corners.png")
+        cv2.imwrite(outpath, cv2.cvtColor(img_with_corners, cv2.COLOR_RGB2BGR))
+
+        corners = corners.squeeze(1)  # (N, 2)
+
+        # Pose: trasformazione camera -> mondo
+        T_c2w = camera_poses[i]
+        R_wc = T_c2w[:3, :3]
+        t_wc = T_c2w[:3, 3]
+        R_cw = R_wc.T
+        t_cw = -R_cw @ t_wc
+
+        # Trasforma la pointcloud nel frame della camera
+        points_cam = (R_cw @ points_world.T + t_cw[:, np.newaxis]).T
+
+        # Filtra solo i punti davanti alla camera
+        valid_idx = points_cam[:, 2] > 0
+        points_cam = points_cam[valid_idx]
+        points_world_valid = points_world[valid_idx]
+
+        # Proietta nel piano immagine
+        proj_2d = K @ points_cam.T
+        proj_2d = (proj_2d[:2] / proj_2d[2]).T  # (N, 2)
+
+        # Matcha ogni corner 2D con punto 3D più vicino
+        tree = cKDTree(proj_2d)
+        matches_3d = []
+        for pt2d in corners:
+            dist, idx = tree.query(pt2d, distance_upper_bound=max_pixel_error)
+            if idx < len(points_world_valid):
+                matches_3d.append(points_world_valid[idx])
+            else:
+                matches_3d.append(None)
+
+        # Filtra match validi
+        corners_filtered = []
+        matched_3d_filtered = []
+        for pt2d, pt3d in zip(corners, matches_3d):
+            if pt3d is not None:
+                corners_filtered.append(pt2d)
+                matched_3d_filtered.append(pt3d)
+
+        results.append((np.array(corners_filtered), np.array(matched_3d_filtered)))
+
+    return results, points_world, pcd
+
+
 PROCESS_ALL_IMAGES = "Multi-Camera"
 class SparseGAState():
     def __init__(self, sparse_ga, should_delete=False, cache_dir=None, outfile_name=None):
@@ -70,7 +202,7 @@ def get_args_parser():
 
 def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, all_msk_obj, focals, cams2world, cam_size,
                                  cam_color=None, as_pointcloud=False,
-                                 transparent_cams=False, silent=False, mask_floor=True, mask_objects=False, h2e_list=None, opt_process=None, scale_factor=None, objects=None):
+                                 transparent_cams=False, silent=False, mask_floor=True, mask_objects=False, h2e_list=None, opt_process=None, scale_factor=None, objects=None, intrinsic_params=None):
     assert len(pts3d) == len(mask) <= len(imgs) <= len(cams2world) == len(focals)
     pts3d = to_numpy(pts3d)
     imgs = to_numpy(imgs)
@@ -140,46 +272,39 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
         pct_updated = trimesh.PointCloud(valid_pts, colors=valid_col)
         scene.add_geometry(pct_updated)
 
-        # SAVE PCL FILE
-        ply_outfile = os.path.join('pointcloud.ply')
-        pct_updated.export(ply_outfile)
-        if not silent:
-            print('(esportata pointcloud in', ply_outfile, ')')
-
         camera_poses = cams2world  
+
         camera_frames = []
         heights = []
 
-        for i, pose in enumerate(camera_poses):
-            if i == 0:
-                camera_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=[0, 0, 0])
-            else:
-                camera_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
-            camera_frame.transform(pose)
-            camera_frames.append(camera_frame)
-            camera_position = pose[:3, 3]
-            x, y, z = camera_position
-
-            if opt_process=="Mobile-robot":
+        if opt_process=="Mobile-robot":
+            for i, pose in enumerate(camera_poses):
+                if i == 0:
+                    camera_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=[0, 0, 0])
+                else:
+                    camera_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
+                camera_frame.transform(pose)
+                camera_frames.append(camera_frame)
+                camera_position = pose[:3, 3]
+                x, y, z = camera_position
                 height = abs(a * x + b * y + c * z + d) / np.sqrt(a**2 + b**2 + c**2)
                 heights.append(height)
                 # print(f"Height of the camera {i} w.r.t. the ground: {height}")
 
-        if opt_process=="Mobile-robot" and scale_factor is not None:
-            height_groups = {}
-            for i, height in enumerate(heights):
-                idx = i // int(len(heights)/len(h2e_list))
-                if idx not in height_groups:
-                    height_groups[idx] = []
+            if scale_factor is not None:
+                height_groups = {}
+                for i, height in enumerate(heights):
+                    idx = i // int(len(heights)/len(h2e_list))
+                    if idx not in height_groups:
+                        height_groups[idx] = []
 
-                height_groups[idx].append(height)
-            
-            mean_heights = {idx: sum(heights)/len(heights) for idx, heights in height_groups.items()}
-            # print(f"Mean height of the cameras w.r.t. the ground: {mean_heights}")
-            for i, h2e in enumerate(h2e_list):
-                h2e[2, 3] = mean_heights[i]
+                    height_groups[idx].append(height)
                 
-
+                mean_heights = {idx: sum(heights)/len(heights) for idx, heights in height_groups.items()}
+                # print(f"Mean height of the cameras w.r.t. the ground: {mean_heights}")
+                for i, h2e in enumerate(h2e_list):
+                    h2e[2, 3] = mean_heights[i]
+                
     else:
         meshes = []
         for i in range(len(imgs)):
@@ -232,10 +357,106 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
     global_frame = trimesh.creation.axis(origin_size=0.01, axis_length=0.5)
     scene.add_geometry(global_frame)
 
-    if not silent:
-        print('(exporting 3D scene to', outfile, ')')
-    scene.export(file_obj=outfile)
+    # if not silent:
+    #     print('(exporting 3D scene to', outfile, ')')
+    # scene.export(file_obj="pointcloud.glb")
     
+    # SAVE PCL FILE
+    T_world_to_scene = np.linalg.inv(cams2world[0] @ OPENGL @ rot)
+    pct_updated.apply_transform(T_world_to_scene)
+
+    # Ora salva la pcl ruotata
+    ply_outfile = os.path.join('pointcloud.ply')
+    pct_updated.export(ply_outfile)
+
+    # # METRIC EVALUATION
+    # print("Intrinsic parameters: ", intrinsic_params)
+    # K=np.array([[intrinsic_params['focal'], 0, intrinsic_params['pp'][0]],
+    #             [0, intrinsic_params['focal'], intrinsic_params['pp'][1]],
+    #             [0, 0, 1]])
+    # # pattern_size = (9, 6)
+    # pattern_size = (6, 5)
+    # scale_factor = 2.0
+
+    # # Raddoppia le dimensioni di tutte le immagini
+    # resized_imgs = []
+    # for img in imgs:
+    #     h, w = img.shape[:2]
+    #     img_uint8 = (img * 255).astype(np.uint8)
+    #     resized = cv2.resize(img_uint8, (int(w * scale_factor), int(h * scale_factor)), interpolation=cv2.INTER_LINEAR)
+    #     resized_imgs.append(resized.astype(np.float32) / 255.0)
+
+    # # Aggiorna K
+    # K_scaled = K.copy()
+    # K_scaled[0, 0] *= scale_factor  # fx
+    # K_scaled[1, 1] *= scale_factor  # fy
+    # K_scaled[0, 2] *= scale_factor  # cx
+    # K_scaled[1, 2] *= scale_factor  # cy
+
+    # results, _, pcd = extract_3d_chessboard_corners(
+    #     imgs=resized_imgs,      
+    #     camera_poses=cams2world,
+    #     K=K_scaled,
+    #     pcd_path="pointcloud.ply",
+    #     pattern_size=pattern_size,
+    #     max_pixel_error=2
+    # )
+
+    # valid_results = []  # salva i risultati validi
+
+    # for i, (pts2d, pts3d) in enumerate(results):
+    #     if pts2d is not None:
+    #         print(f"[Image {i}] Found {len(pts2d)} corner matches.")
+    #     else:
+    #         print(f"[Image {i}] No corners detected.")
+
+    # print("\n=== Per-Image Checkerboard Square Size Analysis ===")
+    # for i, (pts2d, pts3d) in enumerate(results):
+    #     print(f"\n[Image {i}]")
+    #     if pts2d is not None and pts3d is not None and len(pts3d) == pattern_size[0] * pattern_size[1]:
+    #         horiz, vert = compute_chessboard_square_sizes(pts3d, pattern_size)
+    #         mean_h = np.mean(horiz)
+    #         mean_v = np.mean(vert)
+    #         std_h = np.std(horiz)
+    #         std_v = np.std(vert)
+
+    #         print(f"  Mean horizontal square size: {mean_h:.3f} m")
+    #         print(f"  Mean vertical square size:   {mean_v:.3f} m")
+    #         print(f"  Std horizontal: {std_h:.3f} m, Std vertical: {std_v:.3f} m")
+    #         gt = 0.10
+    #         # Criteri per accettare la misura come "valida"
+    #         if abs(mean_h - gt) < 0.01 and abs(mean_v - gt) < 0.01 and std_h < 0.01 and std_v < 0.01:
+    #             valid_results.append((mean_h, mean_v, std_h, std_v))
+    #         else:
+    #             print("  ⚠️ Risultato scartato: deviazione o media troppo distante da 3 cm")
+    #     else:
+    #         print("  Not enough 3D corner points for full pattern.")
+
+    # # Report globale
+    # if len(valid_results) > 0:
+    #     valid_h = [r[0] for r in valid_results]
+    #     valid_v = [r[1] for r in valid_results]
+    #     all_std_h = [r[2] for r in valid_results]
+    #     all_std_v = [r[3] for r in valid_results]
+
+    #     print("\n=== Global Checkerboard Validation (Filtered) ===")
+    #     print(f"✅ Images used: {len(valid_results)}")
+    #     print(f"✅ Mean horizontal size: {np.mean(valid_h):.4f} m ± {np.std(valid_h):.4f}")
+    #     print(f"✅ Mean vertical size:   {np.mean(valid_v):.4f} m ± {np.std(valid_v):.4f}")
+
+    #     from matplotlib import pyplot as plt
+    #     plt.errorbar(range(len(valid_h)), valid_h, yerr=all_std_h, fmt='o')
+    #     plt.axhline(gt, linestyle='--', color='gray', label=f'Ground Truth ({gt} cm)')
+    #     plt.xlabel('Image ID')
+    #     plt.ylabel('Mean horizontal square size (m)')
+    #     plt.legend()
+    #     plt.title('Checkerboard Square Size Estimation per Image')
+    #     plt.savefig('checkerboard_square_size.png')
+    #     plt.close()
+    # else:
+    #     print("\n❌ Nessuna immagine ha passato i criteri di validazione.")
+
+
     if scale_factor is not None:
         for i in range(len(h2e_list)):
             print(f"Estimated H2E calibration matrix of camera {i+1}: {h2e_list[i]}")
@@ -277,7 +498,7 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
 
 
 def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_pointcloud=False, mask_sky=False, mask_floor=False, mask_objects=False, calibration_process="Mobile-robot",
-                            clean_depth=False, transparent_cams=False, TSDF_thresh=0, objects=None):
+                            clean_depth=False, transparent_cams=False, TSDF_thresh=0, objects=None, intrinsic_params=None):
     """
     extract 3D_model (glb file) from a reconstructed scene
     """
@@ -290,6 +511,9 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
     # get optimized values from scene
     scene = scene_state.sparse_ga
     rgbimg = scene.imgs
+
+    # if scene.corners_2d is not None:
+    #     print("Corners 2D: ", scene.corners_2d)
 
     if scene.masks is not None:
         masks = scene.masks[0]
@@ -331,7 +555,7 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
         tsdf = TSDFPostProcess(scene, TSDF_thresh=TSDF_thresh)
         pts3d, pts3d_object, _, confs = to_numpy(tsdf.get_dense_pts3d(masks=masks, clean_depth=clean_depth))
     else:
-        pts3d, pts3d_object, _, confs, confs_object = to_numpy(scene.get_dense_pts3d(masks=masks, clean_depth=clean_depth))
+        pts3d, pts3d_object, _, confs, confs_object = to_numpy(scene.get_dense_pts3d(masks=masks, corners=scene.corners_2d, clean_depth=clean_depth))
 
     msk = to_numpy([c > min_conf_thr for c in confs])
     
@@ -352,14 +576,52 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
         cams2world = cams2world
 
     return _convert_scene_output_to_glb(outfile, rgbimg, pts3d, pts3d_object, msk, all_msk_obj, focals, cams2world, cam_size, as_pointcloud=as_pointcloud,
-                                        transparent_cams=transparent_cams, silent=silent, mask_floor=mask_floor, mask_objects=mask_objects, h2e_list=h2e_list, opt_process=calibration_process, scale_factor=scale_factor, objects=objects)
+                                        transparent_cams=transparent_cams, silent=silent, mask_floor=mask_floor, mask_objects=mask_objects, h2e_list=h2e_list, opt_process=calibration_process, scale_factor=scale_factor, objects=objects, intrinsic_params=intrinsic_params)
 
+
+
+def detect_checkerboard_and_flatten(filelist, pattern_size=(9, 6), target_shape=(288, 512)):
+    checkerboard_corners_resized = []
+
+    print("Target shape: ", target_shape)
+    for path in filelist:
+        # Load original image
+        img = cv2.imread(path)
+        if img is None:
+            print(f"Warning: Failed to load image at {path}")
+            continue
+
+        original_h, original_w = img.shape[:2]
+
+        # Convert to grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # Detect checkerboard corners in original image
+        ret, corners = cv2.findChessboardCorners(gray, pattern_size, None)
+
+        if ret:
+            # Refine corner positions in original image
+            corners_subpix = cv2.cornerSubPix(
+                gray, corners, winSize=(11, 11), zeroZone=(-1, -1),
+                criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+            )
+            
+            # Scale corners to match resized image
+            scale_x = target_shape[1] / original_w
+            scale_y = target_shape[0] / original_h
+            corners_resized = corners_subpix.squeeze(1) * np.array([scale_x, scale_y])
+            checkerboard_corners_resized.append(corners_resized)  # (N, 2)
+        else:
+            checkerboard_corners_resized.append(None)
+            print(f"[WARN] Checkerboard not found in {path}")
+
+    return checkerboard_corners_resized
 
 
 def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, config, 
                             camera_to_use, flattened_filelist, camera_num, intrinsic_params, dist_coeffs, robot_poses, calibration_process, multiple_camera_opt, lr1, niter1, as_pointcloud, mask_sky, 
                             mask_floor, mask_objects, clean_depth, transparent_cams, scenegraph_type, winsize,
-                            win_cyclic, input_text_prompt, **kw):
+                            win_cyclic, input_text_prompt, metric_evaluation, **kw):
     """
     from a list of images, run mast3r inference, sparse global aligner.
     then run get_3D_model_from_scene
@@ -369,6 +631,13 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
     
     image_ext = None
     objects = None
+    print("FLATTENED FILELIST: ", flattened_filelist)
+    print("Flattened imgs shape: ", flattened_imgs[0]['img'].shape)
+
+    corners_2d = None
+    if metric_evaluation:
+        corners_2d = detect_checkerboard_and_flatten(flattened_filelist, pattern_size=(6, 5), target_shape=flattened_imgs[0]['img'].shape[2:])
+
     mask_generator = MaskGenerator(config, flattened_filelist, input_text_prompt, calibration_process)
     if mask_generator.start_mask() == True:
         print("Generating masks...")
@@ -410,7 +679,7 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
         intrinsic_params = None
     print("> Start global optimization")
     scene = sparse_global_alignment(flattened_filelist, pairs, cache_dir,
-                                    model, opt_process, camera_num, flattened_msks, intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs, 
+                                    model, opt_process, camera_num, flattened_msks, corners_2d, intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs, 
                                     robot_poses=robot_poses, multiple_camera_opt=multiple_camera_opt, lr1=lr1, niter1=niter1, device=device,
                                     opt_depth=True, shared_intrinsics=config['shared_intrinsics'],
                                     matching_conf_thr=config['matching_conf_thr'], **kw)
@@ -419,7 +688,7 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
 
     scene_state = SparseGAState(scene, gradio_delete_cache, cache_dir, outfile_name)
     outfile = get_3D_model_from_scene(silent, scene_state, config['cam_size'], config['min_conf_thr'], as_pointcloud, mask_sky, mask_floor, mask_objects, calibration_process,
-                                      clean_depth, transparent_cams, config['TSDF_thresh'], objects)
+                                      clean_depth, transparent_cams, config['TSDF_thresh'], objects, intrinsic_params)
     
     images = [cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in flattened_filelist]
     return scene_state, outfile, images
@@ -450,13 +719,13 @@ def set_scenegraph_options(inputfiles, win_cyclic, scenegraph_type):
     return win_col, winsize, win_cyclic
 
 
-def main_demo(tmpdirname, model, config, device, input_images=None, silent=False, camera_num=None, intrinsic_params=None, dist_coeffs=None, robot_poses=None, camera_to_use=0, calibration_process="Robot Arm", 
-              multiple_camera_opt=True, input_text_prompt="", share=False, gradio_delete_cache=False):
+def main_demo(tmpdirname, model, config, device, input_images=None, silent=False, camera_num=None, intrinsic_params=None, dist_coeffs=None, robot_poses=None, mask_floor=False, camera_to_use=0, calibration_process="Robot-Arm", 
+              multiple_camera_opt=True, input_text_prompt="", metric_evaluation=False, share=False, gradio_delete_cache=False):
 
     if not silent:
         print('Outputting stuff in', tmpdirname)
 
     get_reconstructed_scene(tmpdirname, gradio_delete_cache, model, device, silent, config, 
-                        camera_to_use, input_images, camera_num, intrinsic_params, dist_coeffs, robot_poses, calibration_process, multiple_camera_opt, lr1=0.07, niter1=500, as_pointcloud=False, mask_sky=False, 
-                        mask_floor=False, mask_objects=False, clean_depth=True, transparent_cams=False, scenegraph_type="complete", winsize=1,
-                        win_cyclic=False, input_text_prompt=input_text_prompt)
+                        camera_to_use, input_images, camera_num, intrinsic_params, dist_coeffs, robot_poses, calibration_process, multiple_camera_opt, lr1=0.07, niter1=500, as_pointcloud=True, mask_sky=False, 
+                        mask_floor=mask_floor, mask_objects=False, clean_depth=True, transparent_cams=False, scenegraph_type="complete", winsize=1,
+                        win_cyclic=False, input_text_prompt=input_text_prompt, metric_evaluation=metric_evaluation)

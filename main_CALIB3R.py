@@ -36,16 +36,17 @@ if __name__ == '__main__':
     parser.add_argument('--input_folder', type=str, default="dust3r/croco/assets")
     parser.add_argument('--outdir', type=str, default="output")
     parser.add_argument('--config', type=str, default="config.yaml", help="Path to the configuration file")
-    # parser.add_argument('--mask_floor', type=str2bool, default=True, help="True or False for floor mask generation")
+    parser.add_argument('--mask_floor', type=str2bool, default=False, help="True or False for floor mask generation")
     parser.add_argument('--subset_size', type=int, default=0, help="Number of images to use for the reconstruction")
     parser.add_argument('--use_intrinsics', type=str2bool, default=True, help="Use intrinsic parameters for the cameras")
     parser.add_argument('--calibrate_sensor', type=str2bool, default=True, help="Use robot motion to perform the calibration step")
     parser.add_argument('--start_frame', type=int, default=0, help="Start frame for the reconstruction")
     parser.add_argument('--stride', type=int, default=1, help="Stride for the subset of images")
     parser.add_argument('--camera_to_use', type=int, default=0, help="Number of cameras")
-    parser.add_argument('--calibration_process', type=str, default="Robot Arm", help="Calibration process")
+    parser.add_argument('--calibration_process', type=str, default="Mobile-robot", help="Calibration process: Mobile-robot or Robot-Arm")
     parser.add_argument('--input_text_prompt', type=str, default="", help="Calibration process")
     parser.add_argument('--multiple_camera_opt', type=str2bool, default=True, help="Use robot motion to perform the calibration step")
+    parser.add_argument('--metric_evaluation', type=str2bool, default=True, help="Evaluate the metric of the reconstruction")
 
 
     args = parser.parse_args()
@@ -76,9 +77,9 @@ if __name__ == '__main__':
                 matrix = fs.getNode("matrix").mat()
 
                 # Scale translation of the matrix
-                scale = 1.0
+                # scale = 1.0
                 # scale = 0.9
-                # scale=0.8
+                scale=0.84
                 matrix[:3, 3] = matrix[:3, 3] * scale
 
                 fs.release()
@@ -91,7 +92,6 @@ if __name__ == '__main__':
     
     if args.subset_size > 0:
         stride = args.stride if hasattr(args, 'stride') else 1
-        print("Stride: ", stride)
         for i in range(len(image_list)):
             # image_sublist[i] = image_list[i][args.start_frame:args.start_frame+args.subset_size]
             full_sequence = image_list[i][args.start_frame:] # DAVIDE ADD
@@ -143,13 +143,13 @@ if __name__ == '__main__':
     else:
         # Extract the list index from the selection
         index = args.camera_to_use - 1
-        selected_images = image_list[index]
+        selected_images = image_sublist[index]
         intrinsic_params = intrinsic_params_vec[index] if intrinsic_params_vec else None
         dist_coeff = [dist_coeffs[index]] if dist_coeffs else None
         final_robot_poses = final_robot_poses if final_robot_poses else None
         selected_images_flat = selected_images
         camera_num = 1
-
+    print("Intrinsic parameters: ", intrinsic_params)
     def get_context(tmp_dir):
         return tempfile.TemporaryDirectory(suffix='_mast3r_gradio_demo') if tmp_dir is None \
             else nullcontext(tmp_dir)
@@ -158,6 +158,6 @@ if __name__ == '__main__':
         os.makedirs(cache_path, exist_ok=True)
         
         main_demo(cache_path, model, config, args.device, selected_images_flat, 
-                args.silent, camera_num, intrinsic_params_vec, dist_coeffs, final_robot_poses, args.camera_to_use, args.calibration_process,
-                multiple_camera_opt=args.multiple_camera_opt, input_text_prompt=args.input_text_prompt, share=args.share, gradio_delete_cache=args.gradio_delete_cache)
+                args.silent, camera_num, intrinsic_params, dist_coeff, final_robot_poses, args.mask_floor, args.camera_to_use, args.calibration_process,
+                multiple_camera_opt=args.multiple_camera_opt, input_text_prompt=args.input_text_prompt, metric_evaluation=args.metric_evaluation, share=args.share, gradio_delete_cache=args.gradio_delete_cache)
         

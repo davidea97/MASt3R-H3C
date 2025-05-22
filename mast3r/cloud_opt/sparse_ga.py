@@ -35,7 +35,7 @@ from utils.file_utils import *
 PROCESS_ALL_IMAGES = "Multi-Camera"
 
 class SparseGA():
-    def __init__(self, img_paths, masks, pairs_in, res_fine, anchors, canonical_paths=None, scale_factor=None, trans_X=None, quat_X=None):
+    def __init__(self, img_paths, masks, corners_2d, pairs_in, res_fine, anchors, canonical_paths=None, scale_factor=None, trans_X=None, quat_X=None):
         def fetch_img(im):
             def torgb(x): return (x[0].permute(1, 2, 0).numpy() * .5 + .5).clip(min=0., max=1.)
             for im1, im2 in pairs_in:
@@ -46,6 +46,7 @@ class SparseGA():
         self.canonical_paths = canonical_paths
         self.img_paths = img_paths
         self.masks = masks
+        self.corners_2d = corners_2d
         self.imgs = [fetch_img(img) for img in img_paths]
         self.intrinsics = res_fine['intrinsics']
         self.cam2w = res_fine['cam2w']
@@ -109,13 +110,14 @@ class SparseGA():
     def get_sparse_pts3d(self):
         return self.pts3d
 
-    def get_dense_pts3d(self, masks=None, clean_depth=True, subsample=8):
+    def get_dense_pts3d(self, masks=None, corners=None, clean_depth=True, subsample=8):
         assert self.canonical_paths, 'cache_path is required for dense 3d points'
         device = self.cam2w.device
         confs = []
         confs_object = []
         base_focals = []
         anchors = {}
+        anchors_corners = {}
         all_masks_bool = []
         # H, W = masks[0].shape
         if isinstance(masks, list) and all(elem is None for elem in masks):
@@ -151,24 +153,31 @@ class SparseGA():
             idxs, offsets = anchor_depth_offsets(canon2, {i: (pixels, None)}, subsample=subsample)
             anchors[i] = (pixels, idxs[i], offsets[i])  
 
+            # For metric evaluation
+            if corners is not None and corners[i] is not None:
+                pixels_corners = torch.from_numpy(corners[i]).float().to(device)  # [N, 2] in formato (u, v)
+                idxs_corners, offsets_corners = anchor_depth_offsets(canon2, {i: (pixels_corners, None)}, subsample=subsample)  # no subsampling per corner
+                anchors_corners[i] = (pixels_corners, idxs_corners[i], offsets_corners[i])
+                # print(f"Anchors corners {i}: {anchors_corners[i]}")
+
         # densify sparse depthmaps
         if masks is None:
             pts3d_object = None
             if self.scale_factor is None:
                 pts3d, depthmaps = make_pts3d(anchors, self.intrinsics, self.cam2w, [
-                                            d.ravel() for d in self.depthmaps], base_focals=base_focals, ret_depth=True)
+                                            d.ravel() for d in self.depthmaps], anchors_corners=anchors_corners, base_focals=base_focals, ret_depth=True)
                 if clean_depth:
                     confs = clean_pointcloud(confs, self.intrinsics, inv(self.cam2w), depthmaps, pts3d)
             else:
                 scale_factor_list = [self.scale_factor[i // int(len(base_focals)/len(self.scale_factor))] for i in range(len(base_focals))]
                 pts3d, depthmaps = make_pts3d(anchors, self.intrinsics, self.get_relative_poses(), [
-                                            d.ravel() for d in self.depthmaps], base_focals=base_focals, ret_depth=True, scale_factor=scale_factor_list)
+                                            d.ravel() for d in self.depthmaps], anchors_corners=anchors_corners, base_focals=base_focals, ret_depth=True, scale_factor=scale_factor_list)
                 if clean_depth:
                     confs = clean_pointcloud(confs, self.intrinsics, inv(torch.stack(self.get_relative_poses(), dim=0)), depthmaps, pts3d)
         else:
             if self.scale_factor is None:
                 pts3d, pts3d_object, depthmaps, depthmaps_obj = make_pts3d_mask(anchors, self.intrinsics, self.cam2w, [
-                                            d.ravel() for d in self.depthmaps], masks=masks, base_focals=base_focals, ret_depth=True)
+                                            d.ravel() for d in self.depthmaps], masks=masks, anchors_corners=anchors_corners, base_focals=base_focals, ret_depth=True)
                 clean_depth = False
                 if clean_depth:
                     confs = clean_pointcloud(confs, self.intrinsics, inv(self.cam2w), depthmaps, pts3d)
@@ -176,7 +185,7 @@ class SparseGA():
                 # Extract 3D points and 3D object points with respect to the first camera reference frame
                 scale_factor_list = [self.scale_factor[i // int(len(base_focals)/len(self.scale_factor))] for i in range(len(base_focals))]
                 pts3d, pts3d_object, depthmaps, depthmaps_obj  = make_pts3d_mask(anchors, self.intrinsics, self.get_relative_poses(), [
-                                            d.ravel() for d in self.depthmaps], masks=masks, base_focals=base_focals, ret_depth=True, scale_factor=scale_factor_list)
+                                            d.ravel() for d in self.depthmaps], masks=masks, anchors_corners=anchors_corners, base_focals=base_focals, ret_depth=True, scale_factor=scale_factor_list)
 
                 clean_depth = False
                 if clean_depth:
@@ -232,7 +241,7 @@ def convert_dust3r_pairs_naming(imgs, pairs_in):
     return pairs_in
 
 
-def sparse_global_alignment(imgs, pairs_in, cache_path, model, opt_process=None, camera_num=None, masks = None, intrinsic_params=None, dist_coeffs_cam=None, robot_poses=None, multiple_camera_opt=None, subsample=8, desc_conf='desc_conf',
+def sparse_global_alignment(imgs, pairs_in, cache_path, model, opt_process=None, camera_num=None, masks = None, corners_2d=None, intrinsic_params=None, dist_coeffs_cam=None, robot_poses=None, multiple_camera_opt=None, subsample=8, desc_conf='desc_conf',
                             device='cuda', dtype=torch.float32, shared_intrinsics=False, **kw):
     """ Sparse alignment with MASt3R
         imgs: list of image paths
@@ -272,7 +281,7 @@ def sparse_global_alignment(imgs, pairs_in, cache_path, model, opt_process=None,
         imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d, preds_21, canonical_paths, mst,
         camera_num=camera_num, intrinsic_params=intrinsic_params, dist_coeffs_cam=dist_coeffs_cam, robot_poses=robot_poses, multiple_camera_opt=multiple_camera_opt, shared_intrinsics=shared_intrinsics, cache_path=cache_path, device=device, dtype=dtype, **kw)
 
-    return SparseGA(imgs, masks, pairs_in, res_fine, anchors, canonical_paths, scale_factor, trans_X, quat_X)
+    return SparseGA(imgs, masks, corners_2d, pairs_in, res_fine, anchors, canonical_paths, scale_factor, trans_X, quat_X)
 
 
 def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_depth, anchors, corres, corres2d,
@@ -1082,13 +1091,48 @@ def proj3d(inv_K, pixels, z):
         pixels = torch.cat((pixels, torch.ones_like(pixels[..., :1])), dim=-1)
     return z.unsqueeze(-1) * (pixels * inv_K.diag() + inv_K[:, 2] * mask110(z.device, z.dtype))
 
+def checkerboard_square_stats(all_pts3d_corners, pattern_size):
+    all_dists = []
 
-def make_pts3d(anchors, K, cam2w, depthmaps, base_focals=None, ret_depth=False, scale_factor=None):
+    num_cols, num_rows = pattern_size  # Es. (9, 6)
+
+    for corners3d in all_pts3d_corners:
+        if corners3d.shape[0] != num_cols * num_rows:
+            print("Warning: unexpected number of corners.")
+            continue
+
+        corners3d = corners3d.detach().cpu().numpy() if hasattr(corners3d, 'cpu') else corners3d
+
+        # Reshape i corner in (rows, cols, 3)
+        grid = corners3d.reshape((num_rows, num_cols, 3))
+
+        # Distanze tra colonne (orizzontale)
+        dx = np.linalg.norm(grid[:, 1:] - grid[:, :-1], axis=2)  # shape: (num_rows, num_cols-1)
+        # Distanze tra righe (verticale)
+        dy = np.linalg.norm(grid[1:, :] - grid[:-1, :], axis=2)  # shape: (num_rows-1, num_cols)
+
+        all_dists.extend(dx.flatten())
+        all_dists.extend(dy.flatten())
+
+    all_dists = np.array(all_dists)
+    stats = {
+        'mean': np.mean(all_dists),
+        'std': np.std(all_dists),
+        'min': np.min(all_dists),
+        'max': np.max(all_dists),
+        'num_samples': len(all_dists)
+    }
+
+    return stats
+
+def make_pts3d(anchors, K, cam2w, depthmaps, anchors_corners=None, base_focals=None, ret_depth=False, scale_factor=None):
     focals = K[:, 0, 0]
     invK = inv(K)
     all_pts3d = []
     depth_out = []
-
+    all_pts3d_corners = []
+    depth_out_corners = []
+    # print("ANCHORS CORNERS: ", anchors_corners)
     for img, (pixels, idxs, offsets) in anchors.items():
         
         # from depthmaps to 3d points
@@ -1111,12 +1155,46 @@ def make_pts3d(anchors, K, cam2w, depthmaps, base_focals=None, ret_depth=False, 
         pts3d = geotrf(cam2w[img], pts3d)
         all_pts3d.append(pts3d)
 
+    if anchors_corners is not None:
+        for img, (pixels, idxs, offsets) in anchors_corners.items():
+            
+            # from depthmaps to 3d points
+            if base_focals is None:
+                pass
+            else:
+                # compensate for focal
+                # depth + depth * (offset - 1) * base_focal / focal
+                # = depth * (1 + (offset - 1) * (base_focal / focal))
+                if scale_factor is None:
+                    offsets = 1 + (offsets - 1) * (base_focals[img] / focals[img])
+                else:
+                    offsets = (1 + (offsets - 1) * (base_focals[img] / focals[img]))*scale_factor[img]
+                    
+            pts3d = proj3d(invK[img], pixels, depthmaps[img][idxs] * offsets)
+            if ret_depth:
+                depth_out_corners.append(pts3d[..., 2])  # before camera rotation
+
+            # rotate to world coordinate
+            pts3d = geotrf(cam2w[img], pts3d)
+            all_pts3d_corners.append(pts3d)
+        
+        print("ALL PTS3D: ", all_pts3d_corners)
+    
+        # pattern_size = (9, 6)  # o quello che hai usato
+        pattern_size = (6, 5)  # o quello che hai usato
+        stats = checkerboard_square_stats(all_pts3d_corners, pattern_size)
+
+        print("Checkerboard square statistics:")
+        for k, v in stats.items():
+            print(f"{k}: {v:.4f}")
+
+
     if ret_depth:
         return all_pts3d, depth_out
     return all_pts3d
 
 
-def make_pts3d_mask(anchors, K, cam2w, depthmaps, masks=None, base_focals=None, ret_depth=False, scale_factor=None):
+def make_pts3d_mask(anchors, K, cam2w, depthmaps, masks=None, anchors_corners=None, base_focals=None, ret_depth=False, scale_factor=None):
     """
     Parameters:
     - anchors: dictionary containing pixel coordinates and other metadata for each image
@@ -1137,9 +1215,12 @@ def make_pts3d_mask(anchors, K, cam2w, depthmaps, masks=None, base_focals=None, 
     invK = inv(K)
     all_pts3d = []
     all_pts3d_object = []
+    all_pts3d_corners = []
     
     depth_out = []
     depth_out_object = []
+    depth_out_corners = []
+
     
     for img, (pixels, idxs, offsets) in anchors.items():
         # Extract the mask for the current image
@@ -1188,6 +1269,39 @@ def make_pts3d_mask(anchors, K, cam2w, depthmaps, masks=None, base_focals=None, 
                     depth_out_object.append(pts3d[..., 2][object_mask])  # Depth for the current object
 
             all_pts3d_object.append(pts3d_object)
+
+    if anchors_corners is not None:
+        for img, (pixels, idxs, offsets) in anchors_corners.items():
+            
+            # from depthmaps to 3d points
+            if base_focals is None:
+                pass
+            else:
+                # compensate for focal
+                # depth + depth * (offset - 1) * base_focal / focal
+                # = depth * (1 + (offset - 1) * (base_focal / focal))
+                if scale_factor is None:
+                    offsets = 1 + (offsets - 1) * (base_focals[img] / focals[img])
+                else:
+                    offsets = (1 + (offsets - 1) * (base_focals[img] / focals[img]))*scale_factor[img]
+                    
+            pts3d = proj3d(invK[img], pixels, depthmaps[img][idxs] * offsets)
+            if ret_depth:
+                depth_out_corners.append(pts3d[..., 2])  # before camera rotation
+
+            # rotate to world coordinate
+            pts3d = geotrf(cam2w[img], pts3d)
+            all_pts3d_corners.append(pts3d)
+        
+        print("ALL PTS3D: ", all_pts3d_corners)
+    
+        # pattern_size = (9, 6)  # o quello che hai usato
+        pattern_size = (6, 5)  # o quello che hai usato
+        stats = checkerboard_square_stats(all_pts3d_corners, pattern_size)
+
+        print("Checkerboard square statistics:")
+        for k, v in stats.items():
+            print(f"{k}: {v:.4f}")
 
     if ret_depth:
         return all_pts3d, all_pts3d_object, depth_out, depth_out_object
