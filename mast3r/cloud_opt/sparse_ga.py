@@ -1270,7 +1270,7 @@ def make_pts3d_mask(anchors, K, cam2w, depthmaps, masks=None, anchors_corners=No
 
             all_pts3d_object.append(pts3d_object)
 
-    if anchors_corners is not None:
+    if anchors_corners is not None and anchors_corners:
         for img, (pixels, idxs, offsets) in anchors_corners.items():
             
             # from depthmaps to 3d points
