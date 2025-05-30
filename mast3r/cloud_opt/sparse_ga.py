@@ -110,7 +110,7 @@ class SparseGA():
     def get_sparse_pts3d(self):
         return self.pts3d
 
-    def get_dense_pts3d(self, masks=None, corners=None, clean_depth=True, subsample=8):
+    def get_dense_pts3d(self, masks=None, corners=None, pattern=None, clean_depth=True, subsample=8):
         assert self.canonical_paths, 'cache_path is required for dense 3d points'
         device = self.cam2w.device
         confs = []
@@ -165,19 +165,19 @@ class SparseGA():
             pts3d_object = None
             if self.scale_factor is None:
                 pts3d, depthmaps = make_pts3d(anchors, self.intrinsics, self.cam2w, [
-                                            d.ravel() for d in self.depthmaps], anchors_corners=anchors_corners, base_focals=base_focals, ret_depth=True)
+                                            d.ravel() for d in self.depthmaps], anchors_corners=anchors_corners, pattern=pattern, base_focals=base_focals, ret_depth=True)
                 if clean_depth:
                     confs = clean_pointcloud(confs, self.intrinsics, inv(self.cam2w), depthmaps, pts3d)
             else:
                 scale_factor_list = [self.scale_factor[i // int(len(base_focals)/len(self.scale_factor))] for i in range(len(base_focals))]
                 pts3d, depthmaps = make_pts3d(anchors, self.intrinsics, self.get_relative_poses(), [
-                                            d.ravel() for d in self.depthmaps], anchors_corners=anchors_corners, base_focals=base_focals, ret_depth=True, scale_factor=scale_factor_list)
+                                            d.ravel() for d in self.depthmaps], anchors_corners=anchors_corners, pattern=pattern, base_focals=base_focals, ret_depth=True, scale_factor=scale_factor_list)
                 if clean_depth:
                     confs = clean_pointcloud(confs, self.intrinsics, inv(torch.stack(self.get_relative_poses(), dim=0)), depthmaps, pts3d)
         else:
             if self.scale_factor is None:
                 pts3d, pts3d_object, depthmaps, depthmaps_obj = make_pts3d_mask(anchors, self.intrinsics, self.cam2w, [
-                                            d.ravel() for d in self.depthmaps], masks=masks, anchors_corners=anchors_corners, base_focals=base_focals, ret_depth=True)
+                                            d.ravel() for d in self.depthmaps], masks=masks, anchors_corners=anchors_corners, pattern=pattern, base_focals=base_focals, ret_depth=True)
                 clean_depth = False
                 if clean_depth:
                     confs = clean_pointcloud(confs, self.intrinsics, inv(self.cam2w), depthmaps, pts3d)
@@ -185,7 +185,7 @@ class SparseGA():
                 # Extract 3D points and 3D object points with respect to the first camera reference frame
                 scale_factor_list = [self.scale_factor[i // int(len(base_focals)/len(self.scale_factor))] for i in range(len(base_focals))]
                 pts3d, pts3d_object, depthmaps, depthmaps_obj  = make_pts3d_mask(anchors, self.intrinsics, self.get_relative_poses(), [
-                                            d.ravel() for d in self.depthmaps], masks=masks, anchors_corners=anchors_corners, base_focals=base_focals, ret_depth=True, scale_factor=scale_factor_list)
+                                            d.ravel() for d in self.depthmaps], masks=masks, anchors_corners=anchors_corners, pattern=pattern, base_focals=base_focals, ret_depth=True, scale_factor=scale_factor_list)
 
                 clean_depth = False
                 if clean_depth:
@@ -1125,7 +1125,7 @@ def checkerboard_square_stats(all_pts3d_corners, pattern_size):
 
     return stats
 
-def make_pts3d(anchors, K, cam2w, depthmaps, anchors_corners=None, base_focals=None, ret_depth=False, scale_factor=None):
+def make_pts3d(anchors, K, cam2w, depthmaps, anchors_corners=None, pattern=None, base_focals=None, ret_depth=False, scale_factor=None):
     focals = K[:, 0, 0]
     invK = inv(K)
     all_pts3d = []
@@ -1178,15 +1178,12 @@ def make_pts3d(anchors, K, cam2w, depthmaps, anchors_corners=None, base_focals=N
             pts3d = geotrf(cam2w[img], pts3d)
             all_pts3d_corners.append(pts3d)
         
-        print("ALL PTS3D: ", all_pts3d_corners)
-    
-        # pattern_size = (9, 6)  # o quello che hai usato
-        pattern_size = (6, 5)  # o quello che hai usato
-        stats = checkerboard_square_stats(all_pts3d_corners, pattern_size)
+        if len (all_pts3d_corners) > 0:
+            stats = checkerboard_square_stats(all_pts3d_corners, pattern)
 
-        print("Checkerboard square statistics:")
-        for k, v in stats.items():
-            print(f"{k}: {v:.4f}")
+            print("Checkerboard square statistics:")
+            for k, v in stats.items():
+                print(f"{k}: {v:.4f}")
 
 
     if ret_depth:
@@ -1194,7 +1191,7 @@ def make_pts3d(anchors, K, cam2w, depthmaps, anchors_corners=None, base_focals=N
     return all_pts3d
 
 
-def make_pts3d_mask(anchors, K, cam2w, depthmaps, masks=None, anchors_corners=None, base_focals=None, ret_depth=False, scale_factor=None):
+def make_pts3d_mask(anchors, K, cam2w, depthmaps, masks=None, anchors_corners=None, pattern=None, base_focals=None, ret_depth=False, scale_factor=None):
     """
     Parameters:
     - anchors: dictionary containing pixel coordinates and other metadata for each image
@@ -1293,15 +1290,12 @@ def make_pts3d_mask(anchors, K, cam2w, depthmaps, masks=None, anchors_corners=No
             pts3d = geotrf(cam2w[img], pts3d)
             all_pts3d_corners.append(pts3d)
         
-        print("ALL PTS3D: ", all_pts3d_corners)
-    
-        # pattern_size = (9, 6)  # o quello che hai usato
-        pattern_size = (6, 5)  # o quello che hai usato
-        stats = checkerboard_square_stats(all_pts3d_corners, pattern_size)
+        if len (all_pts3d_corners) > 0:
+            stats = checkerboard_square_stats(all_pts3d_corners, pattern)
 
-        print("Checkerboard square statistics:")
-        for k, v in stats.items():
-            print(f"{k}: {v:.4f}")
+            print("Checkerboard square statistics:")
+            for k, v in stats.items():
+                print(f"{k}: {v:.4f}")
 
     if ret_depth:
         return all_pts3d, all_pts3d_object, depth_out, depth_out_object

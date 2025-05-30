@@ -151,13 +151,14 @@ if __name__ == '__main__':
         camera_num = 1
     print("Intrinsic parameters: ", intrinsic_params)
     def get_context(tmp_dir):
-        return tempfile.TemporaryDirectory(suffix='_mast3r_gradio_demo') if tmp_dir is None \
+        return tempfile.TemporaryDirectory(suffix='_calib3r_demo') if tmp_dir is None \
             else nullcontext(tmp_dir)
     with get_context(args.tmp_dir) as tmpdirname:
         cache_path = os.path.join(tmpdirname, chkpt_tag)
         os.makedirs(cache_path, exist_ok=True)
         
+        pattern = (9, 6)
         main_demo(cache_path, model, config, args.device, selected_images_flat, 
-                args.silent, camera_num, intrinsic_params, dist_coeff, final_robot_poses, args.mask_floor, args.camera_to_use, args.calibration_process,
+                args.silent, camera_num, intrinsic_params, dist_coeff, final_robot_poses, args.mask_floor, args.camera_to_use, args.calibration_process, pattern=pattern,
                 multiple_camera_opt=args.multiple_camera_opt, input_text_prompt=args.input_text_prompt, metric_evaluation=args.metric_evaluation, share=args.share, gradio_delete_cache=args.gradio_delete_cache)
         
