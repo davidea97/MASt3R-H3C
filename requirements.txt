@@ -1,1 +1,12 @@
 scikit-learn
+open3d
+torch==2.4.1 --index-url https://download.pytorch.org/whl/cu121
+torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
+torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu121
+supervision
+pycocotools
+hydra-core
+transformers
+yapf
+timm
+cython

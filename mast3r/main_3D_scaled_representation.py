@@ -6,7 +6,6 @@
 # sparse gradio demo functions
 # --------------------------------------------------------
 import math
-import gradio
 import os
 import numpy as np
 import functools

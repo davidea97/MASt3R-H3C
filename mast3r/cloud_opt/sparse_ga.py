@@ -1328,6 +1328,7 @@ def forward_mast3r(pairs, model, cache_path, desc_conf='desc_conf',
     res_paths = {}
 
     for img1, img2 in tqdm(pairs):
+        start_time = time.time()
         idx1 = hash_md5(img1['instance'])
         idx2 = hash_md5(img2['instance'])
 
@@ -1361,7 +1362,7 @@ def forward_mast3r(pairs, model, cache_path, desc_conf='desc_conf',
                 torch.save((matching_score, corres), mkdir_for(path_corres))
 
         res_paths[img1['instance'], img2['instance']] = (path1, path2), path_corres
-
+        # print("Forward MASt3R: ", time.time() - start_time)
     del model
     torch.cuda.empty_cache()
 
