@@ -70,7 +70,7 @@ def get_args_parser():
 
 def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, all_msk_obj, focals, cams2world, cam_size,
                                  cam_color=None, as_pointcloud=False,
-                                 transparent_cams=False, silent=False, mask_floor=True, mask_objects=False, h2e_list=None, opt_process=None, scale_factor=None, objects=None):
+                                 transparent_cams=False, silent=False, mask_floor=True, mask_objects=False, h2e_list=None, opt_process=None, scale_factor=None, objects=None, input_folder=None):
     assert len(pts3d) == len(mask) <= len(imgs) <= len(cams2world) == len(focals)
     pts3d = to_numpy(pts3d)
     imgs = to_numpy(imgs)
@@ -199,38 +199,39 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
                       None if transparent_cams else imgs[i], focals[i],
                       imsize=imgs[i].shape[1::-1], screen_width=cam_size)
         
-        rob_axis = trimesh.creation.axis(origin_size=0.02, axis_length=0.5)
+        rob_axis = trimesh.creation.axis(origin_size=0.02, axis_length=0.15)
         robot_centers = []
-       
         
         if len(h2e_list) > 0:
             idx = i // int(len(cams2world)/len(h2e_list))
-            ee_to_rob = np.array([[9.99807842e-01, 9.69427142e-04, -1.95790426e-02, 5.55120952e-01],
-                                [9.77803362e-04, -9.99999434e-01, 4.18246983e-04, 9.85213614e-05],
-                                [-1.95786260e-02, -4.37311068e-04, -9.99808225e-01, 5.11640885e-01],
-                                [0., 0., 0., 1.]])
-            # ee_to_rob = np.array([[0.99925415, 0.03416702, -0.01799314, -0.06077267],
-            #                     [0.02872165, -0.96907261, -0.24509866, -0.04276322],
-            #                     [-0.02581095, 0.24439906, -0.96933116, 0.47765159],
-            #                     [0., 0., 0., 1.]])
+
             rob_axis.apply_transform(pose_c2w@np.linalg.inv(h2e_list[idx]))
             robot_pose = pose_c2w @ np.linalg.inv(h2e_list[idx])
             robot_centers.append(robot_pose[:3, 3])  
+
             # scene.add_geometry(rob_axis)
         
-        if i == 0:
-            cam_axis = trimesh.creation.axis(origin_size=0.02, axis_length=0.2)
-            cam_axis.apply_transform(pose_c2w)
-            # scene.add_geometry(cam_axis)
+        # if i == 0:
+        #     global_frame = trimesh.creation.axis(origin_size=0.02, axis_length=0.2)
+        #     tf = np.array([[ 0.99995   ,  0.        , -0.00999983,  0.        ],
+        #                 [-0.002474  , -0.98510, 0.1880,  0.35     ],
+        #                 [-0.00968896,  -0.1880, -0.98510,  0.50     ],
+        #                 [ 0.        ,  0.        ,  0.        ,  1.        ]])
+        #     global_frame.apply_transform(pose_c2w@ tf)
+        #     scene.add_geometry(global_frame)
+        if idx == 0:
             scene.add_geometry(rob_axis)
 
     rot = np.eye(4)
+
     rot[:3, :3] = Rotation.from_euler('y', np.deg2rad(180)).as_matrix()
     print("Camera 0 pose: ", cams2world[0])
+    
+
     scene.apply_transform(np.linalg.inv(cams2world[0] @ OPENGL @ rot))
     # Add global frame
-    global_frame = trimesh.creation.axis(origin_size=0.01, axis_length=0.5)
-    scene.add_geometry(global_frame)
+    # global_frame = trimesh.creation.axis(origin_size=0.01, axis_length=0.5)
+    # scene.add_geometry(global_frame)
 
     if not silent:
         print('(exporting 3D scene to', outfile, ')')
@@ -242,7 +243,7 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
 
     # Save a txt file with translation and rotation of the cameras only for evaluation
     if scale_factor is not None:
-        file_path = "data/pick_objects_1/gt.txt"  # Change this to your actual file path
+        file_path = "data/MEMROC_indoor_res2/gt.txt"  # Change this to your actual file path
         gt_transformations = read_transformations(file_path)
         print("GT Transformation: ", gt_transformations)
         est_transformations = []
@@ -277,7 +278,7 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
 
 
 def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_pointcloud=False, mask_sky=False, mask_floor=False, mask_objects=False, calibration_process="Mobile-robot",
-                            clean_depth=False, transparent_cams=False, TSDF_thresh=0, objects=None):
+                            clean_depth=False, transparent_cams=False, TSDF_thresh=0, objects=None, input_folder=None):
     """
     extract 3D_model (glb file) from a reconstructed scene
     """
@@ -352,19 +353,19 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
         cams2world = cams2world
 
     return _convert_scene_output_to_glb(outfile, rgbimg, pts3d, pts3d_object, msk, all_msk_obj, focals, cams2world, cam_size, as_pointcloud=as_pointcloud,
-                                        transparent_cams=transparent_cams, silent=silent, mask_floor=mask_floor, mask_objects=mask_objects, h2e_list=h2e_list, opt_process=calibration_process, scale_factor=scale_factor, objects=objects)
+                                        transparent_cams=transparent_cams, silent=silent, mask_floor=mask_floor, mask_objects=mask_objects, h2e_list=h2e_list, opt_process=calibration_process, scale_factor=scale_factor, objects=objects, input_folder=input_folder)
 
 
 
 def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, config, 
                             current_scene_state, flattened_filelist, opt_process, camera_num, intrinsic_params, dist_coeffs, robot_poses, calibration_process, multiple_camera_opt, lr1, niter1, as_pointcloud, mask_sky, 
                             mask_floor, mask_objects, clean_depth, transparent_cams, scenegraph_type, winsize,
-                            win_cyclic, input_text_prompt, **kw):
+                            win_cyclic, input_text_prompt, input_folder=None, **kw):
     """
     from a list of images, run mast3r inference, sparse global aligner.
     then run get_3D_model_from_scene
     """
-
+    print("Outdir: ", outdir)
     msks = None
     # print("Imagelist: ", flattened_filelist)
     flattened_imgs, _ = load_single_images(flattened_filelist, config['image_size'], verbose=not config['silent'])
@@ -398,7 +399,6 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
         scene_graph_params.append('noncyclic')
     scene_graph = '-'.join(scene_graph_params)
 
-    print("Image list: ", flattened_imgs)
     pairs = make_pairs(flattened_imgs, scene_graph=scene_graph, prefilter=None, symmetrize=True)
 
     # Sparse GA (forward mast3r -> matching -> 3D optim -> 2D refinement -> triangulation)
@@ -429,7 +429,7 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
 
     scene_state = SparseGAState(scene, gradio_delete_cache, cache_dir, outfile_name)
     outfile = get_3D_model_from_scene(silent, scene_state, config['cam_size'], config['min_conf_thr'], as_pointcloud, mask_sky, mask_floor, mask_objects, calibration_process,
-                                      clean_depth, transparent_cams, config['TSDF_thresh'], objects)
+                                      clean_depth, transparent_cams, config['TSDF_thresh'], objects, input_folder)
     
     images = [cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in flattened_filelist]
     return scene_state, outfile, images
@@ -480,12 +480,12 @@ def main_demo(tmpdirname, model, config, device, server_name, server_port, image
 
     def process_images(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, robot_pose, calibration_process, multiple_camera_opt, lr1, niter1,
                    as_pointcloud, mask_sky, mask_floor, mask_objects, clean_depth, transparent_cams, scenegraph_type,
-                   winsize, win_cyclic, input_text_prompt):
+                   winsize, win_cyclic, input_text_prompt, input_folder=None):
         if isinstance(input_images, list) and all(isinstance(img, str) for img in input_images):
             # Single list of images
             return recon_fun(scene, input_images, opt_process, camera_num, intrinsic_params, dist_coeff, robot_pose, calibration_process, multiple_camera_opt,
                             lr1, niter1, as_pointcloud, mask_sky, mask_floor, mask_objects, clean_depth, transparent_cams, scenegraph_type,
-                            winsize, win_cyclic, input_text_prompt)
+                            winsize, win_cyclic, input_text_prompt, input_folder)
         
         else:
             raise ValueError("No valid input images provided!")

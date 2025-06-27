@@ -76,8 +76,9 @@ if __name__ == '__main__':
                 matrix = fs.getNode("matrix").mat()
 
                 # Scale translation of the matrix
-                scale = 1.0
+                # scale = 1.0
                 # scale = 0.9
+                scale = 0.84
                 matrix[:3, 3] = matrix[:3, 3] * scale
 
                 fs.release()

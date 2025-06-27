@@ -138,7 +138,7 @@ def read_transformations(file_path):
     return transformations
 
 
-def compute_errors(gt, est, camera_num, camera_selected=0):
+def compute_errors(gt, est, camera_num, camera_selected=0, rot_estimation=None):
     """
     Computes translation and rotation errors between ground truth (gt) and estimated (est).
     
@@ -151,6 +151,9 @@ def compute_errors(gt, est, camera_num, camera_selected=0):
         # Compute rotation error using angle-axis representation
         rot_gt = R.from_rotvec(gt[:, 3:])  # Convert to rotation objects
         rot_est = R.from_rotvec(est[:, 3:])
+        if rot_estimation is not None:
+            # If a rotation estimation matrix is provided, use it
+            rot_est = R.from_matrix(rot_estimation)
     else:
         # Compute translation error (Euclidean distance)
         est = est[0]
@@ -159,9 +162,13 @@ def compute_errors(gt, est, camera_num, camera_selected=0):
         # Compute rotation error using angle-axis representation
         rot_gt = R.from_rotvec(gt[3:])  # Convert to rotation objects
         rot_est = R.from_rotvec(est[3:])
-    
+        if rot_estimation is not None:
+            # If a rotation estimation matrix is provided, use it
+            rot_est = R.from_matrix(rot_estimation)
+
     # Compute relative rotation (GT^-1 * EST)
     rot_rel = rot_gt.inv() * rot_est  # Relative rotation
+    print("Rot rel", rot_rel.as_rotvec())
     rot_error = rot_rel.magnitude()   # Extract the angle error in radians
     
     return trans_error, rot_error  # Convert rotation error to degrees

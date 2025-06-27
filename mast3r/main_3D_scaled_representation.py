@@ -37,7 +37,9 @@ import matplotlib.pyplot as pl
 from scipy.spatial import cKDTree
 
 
-PATTERN_SIZE = (9, 6)  # Dimensione della scacchiera (cols, rows)
+# PATTERN_SIZE = (9, 6)  # Dimensione della scacchiera (cols, rows)
+PATTERN_SIZE = (6, 5)  # Dimensione della scacchiera (cols, rows)
+
 PROCESS_ALL_IMAGES = "Multi-Camera"
 
 class SparseGAState():
@@ -75,7 +77,7 @@ def get_args_parser():
 
 def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, all_msk_obj, focals, cams2world, cam_size,
                                  cam_color=None, as_pointcloud=False,
-                                 transparent_cams=False, silent=False, mask_floor=True, mask_objects=False, h2e_list=None, opt_process=None, scale_factor=None, objects=None, intrinsic_params=None):
+                                 transparent_cams=False, silent=False, mask_floor=True, mask_objects=False, h2e_list=None, opt_process=None, scale_factor=None, objects=None, intrinsic_params=None, input_folder=None):
     assert len(pts3d) == len(mask) <= len(imgs) <= len(cams2world) == len(focals)
     pts3d = to_numpy(pts3d)
     imgs = to_numpy(imgs)
@@ -236,15 +238,16 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
 
     # Save a txt file with translation and rotation of the cameras only for evaluation
     if scale_factor is not None:
-        file_path = "data/pick_objects_1/gt.txt"  # Change this to your actual file path
+        file_path = os.path.join(input_folder, "gt.txt")  # Change this to your actual file path
         gt_transformations = read_transformations(file_path)
         print("GT Transformation: ", gt_transformations)
         est_transformations = []
+        rot_estimations = []
         # print("GT Transformation: ", gt_transformations)
         for i in range(len(h2e_list)):
             R_h2e = h2e_list[i][:3, :3]
+            rot_estimations.append(R_h2e)
             roll, pitch, yaw = rotation_matrix_to_rpy(R_h2e)
-            # print(f'{h2e_list[i][0,3]},{h2e_list[i][1,3]},{h2e_list[i][2,3]}, {roll},{pitch},{yaw}')
             est_transformations.append([h2e_list[i][0,3], h2e_list[i][1,3], h2e_list[i][2,3], roll, pitch, yaw])
         for i in range(len(h2e_list)):
             for j in range(len(h2e_list)):
@@ -253,11 +256,12 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
                     R_rel = rel_cam[:3, :3]
                     roll, pitch, yaw = rotation_matrix_to_rpy(R_rel)
                     est_transformations.append([rel_cam[0,3], rel_cam[1,3], rel_cam[2,3], roll, pitch, yaw])
+                    rot_estimations.append(R_rel)
                     # print(f'{rel_cam[0,3]}, {rel_cam[1,3]},{rel_cam[2,3]}, {roll}, {pitch}, {yaw}')
-
-        # print("EST Transformation: ", est_transformations)
+        
+        print("EST Transformation: ", est_transformations)
         camera_selected = 0
-        trans_error, rot_error = compute_errors(np.array(gt_transformations), np.array(est_transformations), len(h2e_list), camera_selected)
+        trans_error, rot_error = compute_errors(np.array(gt_transformations), np.array(est_transformations), len(h2e_list), camera_selected, np.array(rot_estimations))
         print("Translation error: ", trans_error)
         print("Rotation error: ", rot_error)
         if len(h2e_list) > 1:
@@ -271,7 +275,7 @@ def _convert_scene_output_to_glb(outfile, imgs, pts3d, all_pts3d_object, mask, a
 
 
 def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_pointcloud=False, mask_sky=False, mask_floor=False, mask_objects=False, calibration_process="Mobile-robot",
-                            clean_depth=False, transparent_cams=False, TSDF_thresh=0, objects=None, intrinsic_params=None, pattern=None):
+                            clean_depth=False, transparent_cams=False, TSDF_thresh=0, objects=None, intrinsic_params=None, pattern=None, input_folder=None):
     """
     extract 3D_model (glb file) from a reconstructed scene
     """
@@ -346,7 +350,7 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
         cams2world = cams2world
 
     return _convert_scene_output_to_glb(outfile, rgbimg, pts3d, pts3d_object, msk, all_msk_obj, focals, cams2world, cam_size, as_pointcloud=as_pointcloud,
-                                        transparent_cams=transparent_cams, silent=silent, mask_floor=mask_floor, mask_objects=mask_objects, h2e_list=h2e_list, opt_process=calibration_process, scale_factor=scale_factor, objects=objects, intrinsic_params=intrinsic_params)
+                                        transparent_cams=transparent_cams, silent=silent, mask_floor=mask_floor, mask_objects=mask_objects, h2e_list=h2e_list, opt_process=calibration_process, scale_factor=scale_factor, objects=objects, intrinsic_params=intrinsic_params, input_folder=input_folder)
 
 
 
@@ -391,7 +395,7 @@ def detect_checkerboard_and_flatten(filelist, pattern_size=(9,6), target_shape=(
 def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, config, 
                             camera_to_use, flattened_filelist, camera_num, intrinsic_params, dist_coeffs, robot_poses, calibration_process, multiple_camera_opt, lr1, niter1, as_pointcloud, mask_sky, 
                             mask_floor, mask_objects, clean_depth, transparent_cams, scenegraph_type, winsize,
-                            win_cyclic, input_text_prompt, metric_evaluation, pattern, **kw):
+                            win_cyclic, input_text_prompt, metric_evaluation, pattern, input_folder=None, **kw):
     """
     from a list of images, run mast3r inference, sparse global aligner.
     then run get_3D_model_from_scene
@@ -405,11 +409,11 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
     corners_2d = None
     if metric_evaluation:
         corners_2d = detect_checkerboard_and_flatten(flattened_filelist, pattern_size=pattern, target_shape=flattened_imgs[0]['img'].shape[2:])
-
     mask_generator = MaskGenerator(config, flattened_filelist, input_text_prompt, calibration_process)
     if mask_generator.start_mask() == True:
         print("Generating masks...")
         objects, image_ext = mask_generator.generate_masks()
+        # image_ext = ".png"
         subfolders = mask_generator.get_subfolders()
         image_sublist = mask_generator.get_image_list()
 
@@ -456,7 +460,7 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
 
     scene_state = SparseGAState(scene, gradio_delete_cache, cache_dir, outfile_name)
     outfile = get_3D_model_from_scene(silent, scene_state, config['cam_size'], config['min_conf_thr'], as_pointcloud, mask_sky, mask_floor, mask_objects, calibration_process,
-                                      clean_depth, transparent_cams, config['TSDF_thresh'], objects, intrinsic_params, pattern=pattern)
+                                      clean_depth, transparent_cams, config['TSDF_thresh'], objects, intrinsic_params, pattern=pattern, input_folder=input_folder)
     
     images = [cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in flattened_filelist]
     return scene_state, outfile, images
@@ -488,7 +492,7 @@ def get_reconstructed_scene(outdir, gradio_delete_cache, model, device, silent, 
 
 
 def main_demo(tmpdirname, model, config, device, input_images=None, silent=False, camera_num=None, intrinsic_params=None, dist_coeffs=None, robot_poses=None, mask_floor=False, camera_to_use=0, calibration_process="Robot-Arm", 
-              pattern=None, multiple_camera_opt=True, input_text_prompt="", metric_evaluation=False, share=False, gradio_delete_cache=False):
+              pattern=None, multiple_camera_opt=True, input_text_prompt="", metric_evaluation=False, share=False, gradio_delete_cache=False, input_folder=None):
 
     if not silent:
         print('Outputting stuff in', tmpdirname)
@@ -496,4 +500,4 @@ def main_demo(tmpdirname, model, config, device, input_images=None, silent=False
     get_reconstructed_scene(tmpdirname, gradio_delete_cache, model, device, silent, config, 
                         camera_to_use, input_images, camera_num, intrinsic_params, dist_coeffs, robot_poses, calibration_process, multiple_camera_opt, lr1=0.07, niter1=500, as_pointcloud=True, mask_sky=False, 
                         mask_floor=mask_floor, mask_objects=False, clean_depth=True, transparent_cams=False, scenegraph_type="complete", winsize=1,
-                        win_cyclic=False, input_text_prompt=input_text_prompt, metric_evaluation=metric_evaluation, pattern=pattern)
+                        win_cyclic=False, input_text_prompt=input_text_prompt, metric_evaluation=metric_evaluation, pattern=pattern, input_folder=input_folder)

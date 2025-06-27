@@ -770,39 +770,78 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                 for cam_i in range(camera_num):
                     for cam_j in range(cam_i + 1, camera_num):
                         # Compute relative transformation T_{i,j}^{(t)}
-                        T_i_world = wcam_reshaped[cam_i][t]
+                        T_i_world = wcam_reshaped[cam_i][t] 
                         T_j_world = wcam_reshaped[cam_j][t]
-                        # X_ij_t = torch.linalg.inv(T_i_world) @ T_j_world  # Relative pose at time t
-                        X_rot_rel = quaternion_to_matrix(quat_X_rel[cam_i * camera_num + cam_j])
-                        X_rel = torch.cat([torch.cat([X_rot_rel, trans_X_rel[cam_i * camera_num + cam_j].view(3, 1)], dim=1), 
-                                    torch.tensor([[0, 0, 0, 1]], device=device, dtype=dtype)], dim=0)
+
+                        # X_rot_rel = quaternion_to_matrix(quat_X_rel[cam_i * camera_num + cam_j])
+                        # X_rel = torch.cat([torch.cat([X_rot_rel, trans_X_rel[cam_i * camera_num + cam_j].view(3, 1)], dim=1), 
+                        #             torch.tensor([[0, 0, 0, 1]], device=device, dtype=dtype)], dim=0)
                         
                         # Compute relative transformation T_{i,j}^{(t-1)}
                         T_i_world_prev = wcam_reshaped[cam_i][t - 1]
                         T_j_world_prev = wcam_reshaped[cam_j][t - 1]
                         # X_ij_prev = torch.linalg.inv(T_i_world_prev) @ T_j_world_prev  # Relative pose at t-1
-                        B_i = torch.linalg.inv(T_i_world_prev) @ T_i_world
-                        B_j = torch.linalg.inv(T_j_world_prev) @ T_j_world
+                        # B_i = torch.linalg.inv(T_i_world_prev) @ T_i_world
+                        # B_j = torch.linalg.inv(T_j_world_prev) @ T_j_world
+                        B_i = T_i_world_prev @ torch.linalg.inv(T_i_world)
+                        B_j = T_j_world_prev @ torch.linalg.inv(T_j_world)
                         
-                        chain1 = B_i @ X_rel
-                        chain2 = X_rel @ B_j
+                        # Scale relative motion
+                        B_i = B_i.clone()
+                        B_j = B_j.clone()
+                        # B_i[:3, 3] *= torch.abs(scale_factor[cam_i])
+                        # B_j[:3, 3] *= torch.abs(scale_factor[cam_j])
+                        
+                        X_rel = torch.linalg.inv(X_list[cam_i]) @ X_list[cam_j]
+                        X_rel_j = torch.linalg.inv(X_list[cam_j]) @ X_list[cam_i]
+                        chain1 = B_i 
+                        chain2 =  X_rel @ B_j @ torch.linalg.inv(X_rel)  # Relative pose at t
+                        # chain1 = B_i @ X_rel
+                        # chain2 =  X_rel @ B_j
+                        B_i = B_i.clone()
+                        B_j = B_j.clone()
+                        # chain3 = B_j
+                        # chain4 = X_rel_j @ B_i @ torch.linalg.inv(X_rel_j)
+
+
+                        chain1[:3, 3] *= torch.abs(scale_factor[cam_i])
+                        chain2[:3, 3] *= torch.abs(scale_factor[cam_i])
+
+
+                        # chain3[:3, 3] *= torch.abs(scale_factor[cam_j])
+                        # chain4[:3, 3] *= torch.abs(scale_factor[cam_j])
+
+
                         # Compute difference in relative transformations
                         rel_rot_t = chain1[:3, :3]
                         rel_rot_prev = chain2[:3, :3]
                         rel_trans_t = chain1[:3, 3]
                         rel_trans_prev = chain2[:3, 3]
 
+                        # rel_rot_t2 = chain3[:3,:3]
+                        # rel_rot_prev2 = chain4[:3, :3]
+                        # rel_trans_t2 = chain3[:3, 3]
+                        # rel_trans_prev2 = chain4[:3, 3]
+
+
                         # Convert rotation matrices to quaternions
                         rel_quat_t = matrix_to_quaternion(rel_rot_t)
                         rel_quat_prev = matrix_to_quaternion(rel_rot_prev)
+
+                        # rel_quat_t2 = matrix_to_quaternion(rel_rot_t2)
+                        # rel_quat_prev2 = matrix_to_quaternion(rel_rot_prev2)
 
                         # Compute consistency loss
                         rel_rotation_loss = torch.nn.functional.mse_loss(rel_quat_t, rel_quat_prev)
                         rel_translation_loss = torch.nn.functional.mse_loss(rel_trans_t, rel_trans_prev)
 
+                        # rel_rotation_loss2 = torch.nn.functional.mse_loss(rel_quat_t2, rel_quat_prev2)
+                        # rel_translation_loss2 = torch.nn.functional.mse_loss(rel_trans_t2, rel_trans_prev2)
+
                         # Add to total loss
-                        loss += rel_rotation_loss + rel_translation_loss
-                    
+                        # loss += rel_rotation_loss + rel_translation_loss + rel_rotation_loss2 + rel_translation_loss2
+                        loss += rel_rotation_loss + rel_translation_loss 
+
         return loss
     
     def optimize_loop_with_calibration_and_2d(
@@ -875,6 +914,8 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                     quats[i].data[:] /= quats[i].data.norm()
                 for i in range(len(scale_factor)):
                     quat_X[i].data = quat_X[i].data / quat_X[i].data.norm()
+                for i in range(len(quat_X_rel)):
+                    quat_X_rel[i].data = quat_X_rel[i].data / quat_X_rel[i].data.norm()
 
                 # Check for NaN or other optimization issues
                 loss = float(total_loss)

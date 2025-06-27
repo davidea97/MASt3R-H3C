@@ -28,7 +28,6 @@ class MaskGenerator:
         self.sam2_model = build_sam2(self.model_cfg, self.sam2_checkpoint, device=self.device)
         self.video_predictor = build_sam2_video_predictor(self.model_cfg, self.sam2_checkpoint)
         self.sam2_predictor = SAM2ImagePredictor(self.sam2_model)
-
         # build grounding dino model
         self.grounding_model = load_model(
             model_config_path=self.config['grounding_dino_config'], 

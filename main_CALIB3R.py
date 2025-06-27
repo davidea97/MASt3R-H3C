@@ -8,21 +8,18 @@
 import os
 import torch
 import tempfile
-import shutil
 from contextlib import nullcontext
 
 from mast3r.main_3D_scaled_representation import get_args_parser, main_demo
-
+print("MASt3R-H3C main demo executable")
 from mast3r.model import AsymmetricMASt3R
 from mast3r.utils.misc import hash_md5
 from utils.file_utils import load_config
 from mast3r.utils.general_utils import generate_image_list, generate_mask_list, read_intrinsics
 
-import mast3r.utils.path_to_dust3r  # noqa
 from dust3r.demo import set_print_with_timestamp
 from utils.file_utils import *
 
-from Grounded_SAM_2.sam2_mask_tracking import MaskGenerator 
 import glob
 import matplotlib.pyplot as pl
 pl.ion()
@@ -45,7 +42,7 @@ if __name__ == '__main__':
     parser.add_argument('--camera_to_use', type=int, default=0, help="Number of cameras")
     parser.add_argument('--calibration_process', type=str, default="Mobile-robot", help="Calibration process: Mobile-robot or Robot-Arm")
     parser.add_argument('--input_text_prompt', type=str, default="", help="Calibration process")
-    parser.add_argument('--multiple_camera_opt', type=str2bool, default=True, help="Use robot motion to perform the calibration step")
+    parser.add_argument('--multiple_camera_opt', type=str2bool, default=False, help="Use robot motion to perform the calibration step")
     parser.add_argument('--metric_evaluation', type=str2bool, default=True, help="Evaluate the metric of the reconstruction")
 
 
@@ -155,10 +152,12 @@ if __name__ == '__main__':
             else nullcontext(tmp_dir)
     with get_context(args.tmp_dir) as tmpdirname:
         cache_path = os.path.join(tmpdirname, chkpt_tag)
+        print("cache_path: ", cache_path)
         os.makedirs(cache_path, exist_ok=True)
         
-        pattern = (9, 6)
+        # pattern = (9, 6)
+        pattern = (6,5)
         main_demo(cache_path, model, config, args.device, selected_images_flat, 
                 args.silent, camera_num, intrinsic_params, dist_coeff, final_robot_poses, args.mask_floor, args.camera_to_use, args.calibration_process, pattern=pattern,
-                multiple_camera_opt=args.multiple_camera_opt, input_text_prompt=args.input_text_prompt, metric_evaluation=args.metric_evaluation, share=args.share, gradio_delete_cache=args.gradio_delete_cache)
+                multiple_camera_opt=args.multiple_camera_opt, input_text_prompt=args.input_text_prompt, metric_evaluation=args.metric_evaluation, share=args.share, gradio_delete_cache=args.gradio_delete_cache, input_folder=args.input_folder)
         

@@ -9,7 +9,7 @@ as_pointcloud: true
 mask_sky: false
 clean_depth: true
 transparent_cams: false
-cam_size: 0.1
+cam_size: 0.05
 winsize: 10
 win_cyclic: true
 refid: 0
