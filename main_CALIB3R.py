@@ -9,9 +9,10 @@ import os
 import torch
 import tempfile
 from contextlib import nullcontext
-
+import sys
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "Grounded_SAM_2"))
 from mast3r.main_3D_scaled_representation import get_args_parser, main_demo
-print("MASt3R-H3C main demo executable")
+print("Calib3R main demo executable")
 from mast3r.model import AsymmetricMASt3R
 from mast3r.utils.misc import hash_md5
 from utils.file_utils import load_config
