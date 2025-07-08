@@ -730,11 +730,14 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
             A_List.append(A_cam)
             B_List.append(B_cam)
 
-        max_val = max(rotation_magnitude_list)
-        min_val = min(rotation_magnitude_list)
-        rotation_magnitude_list = [(val - min_val) / (max_val - min_val) for val in rotation_magnitude_list]
-        rotation_magnitude_list = [val**2 for val in rotation_magnitude_list]
-        
+        # max_val = max(rotation_magnitude_list)
+        # min_val = min(rotation_magnitude_list)
+        # rotation_magnitude_list = [(val - min_val) / (max_val - min_val) for val in rotation_magnitude_list]
+        # rotation_magnitude_list = [val**2 for val in rotation_magnitude_list]
+        max_val, min_val = max(rotation_magnitude_list), min(rotation_magnitude_list)
+        denom = max_val - min_val if max_val != min_val else 1.0
+        rotation_mags = [((val - min_val) / denom) ** 2 for val in rotation_magnitude_list]
+
         for cam_idx in range(camera_num):
             for i in range(1, len(wcam_reshaped[cam_idx])):
                 A = A_List[cam_idx][i - 1]
@@ -743,18 +746,19 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                 A = A.to(device).to(dtype)
                 B = B.to(device).to(dtype)
                 B_rotated = B.clone()
+                B_rotated[:3, 3] *= torch.abs(scale_factor[cam_idx])
                 chain1 = A
                 chain2 = X_list[cam_idx] @ B_rotated @ torch.linalg.inv(X_list[cam_idx])
-            
-                # Scale the translation part of chain2
-                # chain2 = chain2.clone()
-                chain2[:3, 3] *= torch.abs(scale_factor[cam_idx])
+                
+                # chain1 = A @ X_list[cam_idx]
+                # chain2 = X_list[cam_idx] @ B_rotated 
 
                 # Compute rotation loss
                 chain1_quat = matrix_to_quaternion(chain1[:3, :3])
                 chain2_quat = matrix_to_quaternion(chain2[:3, :3])
                 rotation_magnitude = rotation_magnitude_list[i - 1]
-                rotation_loss = rotation_magnitude * torch.nn.functional.mse_loss(chain1_quat, chain2_quat)
+                # rotation_loss = rotation_magnitude * torch.nn.functional.mse_loss(chain1_quat, chain2_quat)
+                rotation_loss = rotation_magnitude * (1 - torch.sum(chain1_quat * chain2_quat) ** 2)
 
                 # Compute translation loss
                 translation_loss = rotation_magnitude * torch.nn.functional.mse_loss(chain1[:3, 3], chain2[:3, 3])
@@ -789,23 +793,23 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
                         # Scale relative motion
                         B_i = B_i.clone()
                         B_j = B_j.clone()
-                        # B_i[:3, 3] *= torch.abs(scale_factor[cam_i])
-                        # B_j[:3, 3] *= torch.abs(scale_factor[cam_j])
+                        B_i[:3, 3] *= torch.abs(scale_factor[cam_i])
+                        B_j[:3, 3] *= torch.abs(scale_factor[cam_j])
                         
                         X_rel = torch.linalg.inv(X_list[cam_i]) @ X_list[cam_j]
-                        X_rel_j = torch.linalg.inv(X_list[cam_j]) @ X_list[cam_i]
-                        chain1 = B_i 
-                        chain2 =  X_rel @ B_j @ torch.linalg.inv(X_rel)  # Relative pose at t
-                        # chain1 = B_i @ X_rel
-                        # chain2 =  X_rel @ B_j
-                        B_i = B_i.clone()
-                        B_j = B_j.clone()
+                        # X_rel_j = torch.linalg.inv(X_list[cam_j]) @ X_list[cam_i]
+                        # chain1 = B_i 
+                        # chain2 =  X_rel @ B_j @ torch.linalg.inv(X_rel)  # Relative pose at t
+                        chain1 = B_i @ X_rel
+                        chain2 =  X_rel @ B_j
+                        # B_i = B_i.clone()
+                        # B_j = B_j.clone()
                         # chain3 = B_j
                         # chain4 = X_rel_j @ B_i @ torch.linalg.inv(X_rel_j)
 
 
-                        chain1[:3, 3] *= torch.abs(scale_factor[cam_i])
-                        chain2[:3, 3] *= torch.abs(scale_factor[cam_i])
+                        # chain1[:3, 3] *= torch.abs(scale_factor[cam_i])
+                        # chain2[:3, 3] *= torch.abs(scale_factor[cam_i])
 
 
                         # chain3[:3, 3] *= torch.abs(scale_factor[cam_j])
@@ -870,7 +874,11 @@ def sparse_scene_optimizer(imgs, subsample, imsizes, pps, base_focals, core_dept
             for iter in range(niter or 1):
                 # Compute camera poses and points 
                 _, (w2cam, cam2w), depthmaps = make_K_cam_depth(K_fixed_tensor, flattened_pps, trans, quats, flattened_log_sizes, flattened_core_depth)
+                # scale_factor_list = [scale_factor[i // int(len(base_focals)/len(scale_factor))] for i in range(len(base_focals))]
+
                 pts3d = make_pts3d(anchors, K_fixed_tensor, cam2w, depthmaps, base_focals=base_focals)
+                # pts3d = [p * scale_factor_list[i] for i, p in enumerate(pts3d)] 
+
                 if niter == 0:
                     break
 

@@ -312,7 +312,11 @@ def get_3D_model_from_scene(silent, scene_state, cam_size, min_conf_thr=2, as_po
             h2e = np.eye(4)
             h2e[:3, :3] = rotation.as_matrix()  # Now as_matrix() will work
 
-            h2e[:3, 3] = scale_factor[i].detach().cpu().numpy() * trans_X[i].detach().cpu().numpy()
+            # h2e[:3, 3] = scale_factor[i].detach().cpu().numpy() * trans_X[i].detach().cpu().numpy()
+            print("Scale factor: ", scale_factor[i])
+            print("Translation: ", trans_X[i].detach().cpu().numpy())
+            h2e[:3, 3] = trans_X[i].detach().cpu().numpy()
+            # h2e[2, 3] = scale_factor[i].detach().cpu().numpy * trans_X[2].detach().cpu().numpy()
             h2e_list.append(h2e)
 
     relative_transformations = []
